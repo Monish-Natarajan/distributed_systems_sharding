@@ -1,11 +1,12 @@
 from flask import Flask, jsonify
 import sys
+import os
 
 app = Flask(__name__)
 
 # Unique identifier for the server
 # This will be used to identify the server in the load balancer
-server_identifier = sys.argv[1]
+server_identifier = os.environ['SERVER_IDENTIFIER']
 
 @app.route('/home', methods=['GET'])
 def home():
@@ -27,5 +28,4 @@ def heartbeat():
     return '', 200
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=6000)
-
+    app.run(host='0.0.0.0', port=8080)
