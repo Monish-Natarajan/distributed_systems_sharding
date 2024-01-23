@@ -8,7 +8,7 @@ WORKDIR /app
 COPY . /app
 
 # Install any needed packages specified in requirements.txt
-RUN pip install flask
+RUN pip install quart
 
 # Run server.py when the container launches
 CMD ["python", "server.py"]

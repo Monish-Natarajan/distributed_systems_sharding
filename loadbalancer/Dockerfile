@@ -8,8 +8,8 @@ WORKDIR /app
 COPY . /app
 
 # Install necessary packages
-RUN pip install flask
-RUN pip install requests
+RUN pip install quart
+RUN pip install httpx
 EXPOSE 5000
 
 # Run lb.py when the container launches

@@ -1,15 +1,15 @@
-from flask import Flask, jsonify
+from quart import Quart, jsonify
 import sys
 import os
 
-app = Flask(__name__)
+app = Quart(__name__)
 
 # Unique identifier for the server
 # This will be used to identify the server in the load balancer
 server_identifier = os.environ['SERVER_IDENTIFIER']
 
 @app.route('/home', methods=['GET'])
-def home():
+async def home():
     data = {
         'response': {
             'message': 'Hello from server number: {}'.format(server_identifier),

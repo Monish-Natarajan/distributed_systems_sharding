@@ -1,11 +1,11 @@
-from flask import Flask, jsonify
-from flask import request, Response
-import requests
+from quart import Quart, jsonify
+from quart import request, Response
+import httpx
 import random
 import sys
 from consistent_hash import ConsistentHashing, RequestNode, ServerNode
 
-app = Flask(__name__)
+app = Quart(__name__)
 
 
 @app.route('/rep', methods=['GET'])
@@ -69,7 +69,7 @@ def favicon():
 
 # forwarding requests to the nearest server
 @app.route('/<path>', methods=['GET'])
-def home(path):
+async def home(path):
 
     if path != "home":
         data = {
@@ -92,7 +92,8 @@ def home(path):
     else:
         server_hostname = nearest_server.hostname
         # Forward the request to the nearest server
-        response = requests.get(f"http://{server_hostname}:8080/{path}")
+        async with httpx.AsyncClient() as client:
+            response = await client.get(f"http://{server_hostname}:8080/{path}")
 
     # Return the response from the server
     return response.content, response.status_code
