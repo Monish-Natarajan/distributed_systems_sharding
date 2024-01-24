@@ -22,9 +22,8 @@ class ConsistentHashing:
         # Add a request node to the consistent hashing ring
         pass
 
-    def remove_node(self, node):
-        # Remove a node from the consistent hashing ring
-        pass
+    def remove_server(self, key):
+        self.server_list.remove(key)
 
     def get_nearest_server(self, key):
         # Get the node responsible for a given key
@@ -33,6 +32,12 @@ class ConsistentHashing:
         else:
             # return a random server for self.server_list
             return random.choice(self.server_list)
+        
+    def search_server(self, key):
+        if key in self.server_list:
+            return True
+        else:
+            return False
 
     def get_servers(self):
         # Get all the server nodes in the consistent hashing ring
