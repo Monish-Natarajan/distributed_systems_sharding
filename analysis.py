@@ -5,6 +5,8 @@ import json
 import os
 import ast
 
+PORT_NO = 5000
+
 
 async def make_request(session, url):
     async with session.get(url) as response:
@@ -13,14 +15,14 @@ async def make_request(session, url):
 
 async def launch_requests():
     async with aiohttp.ClientSession() as session:
-        tasks = [make_request(session, 'http://localhost:5000/home') for _ in range(10000)]
+        tasks = [make_request(session, f'http://localhost:{PORT_NO}/home') for _ in range(10000)]
         results = await asyncio.gather(*tasks)
         return results
 
 
 async def count_responses(results):
     # get current list of servers
-    url = 'http://localhost:5000/rep'
+    url = f'http://localhost:{PORT_NO}/rep'
     counts = {}
     # make a GET request that will return the current list of servers
     async with aiohttp.ClientSession() as session:
@@ -65,22 +67,23 @@ def plot_barchart(counts, filename):
     # Save the figure to the specified output filename
     plt.savefig(f'output/{filename}.png')
 
+
 async def instantiate_server():
-    url = 'http://localhost:5000/add'
+    url = f'http://localhost:{PORT_NO}/add'
     # make a POST request to the add endpoint
     async with aiohttp.ClientSession() as session:
         await session.post(url, json={'n': 1, 'hostnames': []})
 
 
 async def delete_server():
-    url = 'http://localhost:5000/rm'
+    url = f'http://localhost:{PORT_NO}/rm'
     # make a POST request to the add endpoint
     async with aiohttp.ClientSession() as session:
         await session.post(url, json={'n': 1, 'hostnames': []})
 
 
 async def list_servers():
-    url = 'http://localhost:5000/rep'
+    url = f'http://localhost:{PORT_NO}/rep'
     # make a GET request that will return the current list of servers
     async with aiohttp.ClientSession() as session:
         async with session.get(url) as response:
@@ -122,29 +125,33 @@ async def a2():
         await common(n, "a2_n_{}".format(n))
 
 
-async def a3():
-    # take user input, should be either "add" or "rm"
-    # loop until user enters "done"
-    # if user enters "add", call instantiate_server()
-    # if user enters "rm", call delete_server()
-    # if user enters "rep", call list_servers()
-    # if user enters "done", break out of the loop
-    # else, print "Invalid input"
-    user_input = input("Enter command (add, rm, rep, done) (no args for anything): ")
-    while user_input != 'done':
-        if user_input == 'add':
-            await instantiate_server()
-        elif user_input == 'rm':
-            await delete_server()
-        elif user_input == 'rep':
-            await list_servers()
-        else:
-            print("Invalid input")
-        user_input = input("Enter command (add, rm, rep, done) (no args for anything): ")
+def a3():
+    print(SEPARATOR)
+    print("| Running a3 |")
+    print(SEPARATOR)
+    # plot a line plot of 10000/N for N= 2 to 6
+    fig, ax = plt.subplots()
+    y = [10000 / i for i in range(2, 7)]
+    x = [i for i in range(2, 7)]
+    ax.plot(x, y)
+    plt.tight_layout()
+    ax.set_xlabel('Number of Servers')
+    ax.set_ylabel('Number of Requests per Server')
 
 
 async def main():
-    await a2()
+    # user prompt for a1, a2, a3
+    user_input = input("Enter a1, a2 or a3 (or 'done' to exit): ")
+    while user_input != 'done':
+        if user_input == 'a1':
+            await a1()
+        elif user_input == 'a2':
+            await a2()
+        elif user_input == 'a3':
+            a3()
+        else:
+            print("Invalid input")
+        user_input = input("Enter a1, a2 or a3 (or 'done' to exit): ")
 
 
 if __name__ == '__main__':

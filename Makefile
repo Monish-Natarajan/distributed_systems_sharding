@@ -2,6 +2,8 @@ setup:
 	python3 -m venv venv
 	. venv/bin/activate
 	pip install -r requirements.txt
+	@docker network create mynet
+	@docker build -t server ./server
 
 run:
 	@docker build -t server ./server

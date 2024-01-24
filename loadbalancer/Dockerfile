@@ -39,6 +39,5 @@ RUN cmake --build .
 WORKDIR /app
 
 
-# set
 # Run lb.py when the container launches
-CMD python lb.py 2>/dev/null 1>/dev/null
+#CMD python -m cProfile -o profiling.txt lb.py && less profiling.txt
