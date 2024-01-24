@@ -4,6 +4,8 @@ import matplotlib.pyplot as plt
 import json
 import os
 import ast
+import tqdm
+import tqdm.asyncio
 
 PORT_NO = 5000
 
@@ -16,7 +18,18 @@ async def make_request(session, url):
 async def launch_requests():
     async with aiohttp.ClientSession() as session:
         tasks = [make_request(session, f'http://localhost:{PORT_NO}/home') for _ in range(10000)]
-        results = await asyncio.gather(*tasks)
+        results = []
+        
+        # with tqdm.tqdm(total=len(tasks)) as pbar:
+        #     for f in asyncio.as_completed(tasks):
+        #         result = await f
+        #         results.append(result)
+        #         pbar.update(1)
+        print("Sending requests")
+        for f in tqdm.asyncio.tqdm.as_completed(tasks):
+            results.append(await f)
+
+        # results = await asyncio.gather(*tasks)
         return results
 
 
@@ -92,9 +105,12 @@ async def list_servers():
 
 
 async def common(n, filename):
-    for i in range(n):
+    print("Instantiating servers")
+    for i in tqdm.tqdm(range(n)):
         await instantiate_server()
+    print("Finished instantiating servers")
     results = await launch_requests()
+    print("Finished sending requests")
     counts = await count_responses(results)
     # print a tabulated version of counts
     print("{:<20} {:<10}".format('Label', 'Number'))
@@ -123,6 +139,15 @@ async def a2():
     for n in range(2, 7):
         print(f"Running for n = {n}")
         await common(n, "a2_n_{}".format(n))
+
+    # plot a line plot of 10000/N for N = 2 to 6
+    fig, ax = plt.subplots()
+    y = [10000 / i for i in range(2, 7)]
+    x = [i for i in range(2, 7)]
+    ax.plot(x, y)
+    plt.tight_layout()
+    ax.set_xlabel('Number of Servers')
+    ax.set_ylabel('Number of Requests per Server')
 
 
 def a3():
