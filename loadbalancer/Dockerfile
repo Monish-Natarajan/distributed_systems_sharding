@@ -40,4 +40,5 @@ WORKDIR /app
 
 
 # Run lb.py when the container launches
+CMD ["python", "lb.py"]
 #CMD python -m cProfile -o profiling.txt lb.py && less profiling.txt
