@@ -5,8 +5,8 @@ import os
 app = Quart(__name__)
 
 # Unique identifier for the server
-# This will be used to identify the server in the load balancer
-server_identifier = os.environ['SERVER_IDENTIFIER']
+# This will be the server's hostname
+server_identifier = os.environ['HOSTNAME']
 
 @app.route('/home', methods=['GET'])
 async def home():

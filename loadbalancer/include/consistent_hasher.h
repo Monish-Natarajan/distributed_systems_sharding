@@ -113,6 +113,12 @@ namespace Hashing {
         }
 
     public:
+        consistent_hasher(){
+            std::random_device rd;
+            std::mt19937 rng(rd()); // Seed the random number generator with current time
+            std::uniform_int_distribution<uint64_t> distribution(0, 0xFFFFFF); // ASCII values for lowercase letters
+            nextServerId = distribution(rng);
+        }
         void add_server(std::string suggested_hostname) {
             std::lock_guard<std::mutex> guard(lock);
             // check if suggested hostname is already in use
@@ -129,7 +135,7 @@ namespace Hashing {
 
                 // linear probing
                 for (uint64_t i = 0; i < numSlots; i++) {
-                    auto index = hashValue + 11 * i;
+                    auto index = hashValue + 111 * i;
                     if (ring.contains(index)) continue;
                     else {
                         ring[index] = &virtualServer;

@@ -1,50 +1,16 @@
 version: '3'
 services:
-  loadbalancer:
-    build: ./loadbalancer 
-    image: myloadbal
-    container_name: loadbalancer
+  load_balancer_service:
+    build: ./loadbalancer
+    container_name: load_balancer
     ports:
       - "5000:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - ./loadbalancer:/app
     privileged: true
-    networks:
-      - mynet
-  server1:
-    build: ./server
-    image: myserver
-    container_name: server1
-    # ports:
-    #   - "8081:8080"
-    environment:
-      - HOSTNAME=server1
-      - SERVER_IDENTIFIER=server1
-    networks:
-      - mynet
-  server2:
-    build: ./server
-    image: myserver
-    container_name: server2
-    # ports:
-    #   - "8082:8080"
-    environment:
-      - HOSTNAME=server2
-      - SERVER_IDENTIFIER=server2
-    networks:
-      - mynet
-  server3:
-    build: ./server
-    image: myserver
-    # ports:
-    #   - "8083:8080"
-    container_name: server3
-    environment:
-      - HOSTNAME=server3
-      - SERVER_IDENTIFIER=server3
+    # define a network called mynet
     networks:
       - mynet
 networks:
   mynet:
-    name: mynet
+    external: true

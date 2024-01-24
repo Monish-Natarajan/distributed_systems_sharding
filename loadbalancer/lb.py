@@ -7,8 +7,9 @@ import subprocess
 import sys
 import string
 import asyncio
-import os
-from consistent_hash import ConsistentHashing, RequestNode, ServerNode
+import logging
+
+from consistent_hasher import ConsistentHashing
 
 
 def generate_hostname(n):
@@ -56,11 +57,11 @@ async def add():
 
     while len(hostnames) < n:
         # append random hostnames of length <= 10
-        hostnames.append(generate_hostname(10))
+        hostnames.add(generate_hostname(10))
 
         # add the requested servers
     for hostname in hostnames:
-        res = spawn_server(hostname, hostname, 'myserver')
+        res = spawn_container(hostname)
 
         if res == "success":
             try:
@@ -133,7 +134,7 @@ async def rem():
         except Exception as e:
             print(f"An error occurred while removing server {hostname} from hash ring: {e}")
         # now that we have removed the server from the hash ring, we can stop the container
-        res = remove_server(hostname)
+        res = remove_container(hostname)
 
         if res == "success":
             print(f"Successfully removed server {hostname} container")
@@ -168,8 +169,7 @@ async def home(path):
         }
         return jsonify(data), 400
 
-    # Create a new RequestNode for the incoming request
-    request_id = random.randint(0, sys.maxsize)  # random id temporarily
+    request_id = random.randint(100000, 1000000)  # random id temporarily
 
     # Get the nearest server for the request
     nearest_server = ch.get_nearest_server(request_id)
@@ -190,16 +190,20 @@ async def home(path):
 
         # access request object
         url = request.url
-        return redirect(url, code=307)
+        return redirect(url, code=307)  # let's try again, since we have handled the failure
 
     # Return the response from the server
     return response.content, response.status_code
 
 
-def spawn_server(hostname):
-    server_image = 'myserver'
-    command = f'docker run --name {hostname} --network mynet --network-alias {hostname} -e HOSTNAME={hostname} -d {server_image}'
-    result = subprocess.run(command, shell=True, capture_output=True, text=True)
+def spawn_container(hostname):
+    server_image = 'server'
+    command = f'docker run --rm --name {hostname} --network mynet --network-alias {hostname} -e HOSTNAME={hostname} -d {server_image}'
+    try:
+        result = subprocess.run(command, shell=True, capture_output=True, text=True)
+    except Exception as e:
+        print(f"An error occurred while trying to start server container {hostname}: {e}")
+        return "failure"
 
     if result.returncode != 0:
         print("Unable to start server container")
@@ -210,7 +214,8 @@ def spawn_server(hostname):
         print("Output:", result.stdout)
         return "success"
 
-def remove_server(node_name):
+
+def remove_container(node_name):
     command = f'docker stop {node_name} && docker rm {node_name}'
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
 
@@ -242,8 +247,11 @@ async def handle_failure(hostname):
             if response.status_code == 200:
                 is_alive = True
                 break  # server is alive
-        except:
-            pass
+        except Exception as e:
+            # ignore exceptions and try again
+            print(
+                f"handle_failure(): Exception raised while trying to check for liveliness of server {hostname}, "
+                f"trying again: {e}")
 
     if is_alive:
         # server is alive, add it back to the ring
@@ -261,7 +269,7 @@ async def handle_failure(hostname):
         while new_hostname in ch.get_servers():
             new_hostname = generate_hostname(10)
 
-        res = spawn_server(new_hostname)
+        res = spawn_container(new_hostname)
         time.sleep(1)
 
         if res == "success":
@@ -274,57 +282,19 @@ async def handle_failure(hostname):
         else:
             print(f"Unable to add server {new_hostname}!")
 
-    for server in server_list:
-        hostname = server.hostname
-        for _ in range(3):  # retry 3 times
-            try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.get(f"http://{hostname}:8080/heartbeat")
-                if response.status_code == 200:
-                    break  # server is alive
-            except httpx.HTTPError:
-                pass  # ignore exceptions and try again
-
-        else:  # break statement is not executed -> server dead
-            print(f"Server {hostname} is down!")
-
-            # remove entry from consistent hashing ring
-            ch.remove_server(hostname)
-
-            # spawn new server with a random hostname
-            new_hostname = hostname
-
-            # keep trying to generate a hostname that's not already in use
-            while new_hostname in server_list:
-                new_hostname = generate_hostname(10)
-
-            res = spawn_server(new_hostname)
-            time.sleep(1)
-
-            if res == "success":
-                try:
-                    ch.add_server(new_hostname)
-                    print(f"Succesfully added server {new_hostname} to replace {hostname}")
-                except Exception as e:
-                    print(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
-                    ch.remove_server(new_hostname)
-            else:
-                print(f"Unable to add server {new_hostname}!")
-
 
 if __name__ == '__main__':
 
     # initialize the load balancer with 3 servers
     N = 3
-    server_ids = [1, 2, 3]
-    server_hostnames = {1: "server1", 2: "server2", 3: "server3"}
+    server_hostnames = ["server1", "server2", "server3"]
 
     ch = ConsistentHashing()
 
     for i in range(N):
-        server_id = server_ids[i]
-        server_hostname = server_hostnames[server_id]
-        server_node = ServerNode(server_id, server_hostname)
-        ch.add_server(server_node)
-
+        server_hostname = server_hostnames[i]
+        # assume the following calls execute without any errors
+        spawn_container(server_hostname)
+        ch.add_server(server_hostname)
+    app.logger.setLevel(logging.ERROR)
     app.run(host='0.0.0.0', port=5001)

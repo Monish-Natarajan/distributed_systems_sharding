@@ -16,4 +16,4 @@ target_include_directories(consistent_hasher PRIVATE include ${Python3_INCLUDE_D
 
 # copy the output module to bin directory after compilation
 add_custom_command(TARGET consistent_hasher POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:consistent_hasher> ${CMAKE_SOURCE_DIR}/bin)
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:consistent_hasher> ${CMAKE_SOURCE_DIR}/)
