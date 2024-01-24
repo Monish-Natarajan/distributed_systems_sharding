@@ -1,7 +1,8 @@
-from quart import Quart, jsonify
+from quart import Quart, jsonify, redirect
 from quart import request, Response
 import httpx
 import random
+import time
 import subprocess
 import sys
 import os
@@ -9,6 +10,7 @@ from consistent_hash import ConsistentHashing, RequestNode, ServerNode
 
 app = Quart(__name__)
 next_port_no = 18084
+next_server_id = 4
 
 @app.route('/rep', methods=['GET'])
 def rep():
@@ -31,6 +33,7 @@ def rep():
 @app.route('/add', methods=['POST'])
 async def add():
 
+    global next_server_id
     print("Received add request")
 
     json_data = await request.json
@@ -58,7 +61,8 @@ async def add():
         
         if res == "success":
             try:    
-                server_id = len(ch.get_servers()) + 1
+                server_id = next_server_id
+                next_server_id += 1
                 server_node = ServerNode(server_id, hostname)
                 ch.add_server(server_node)
                 print(f"Succesfully added server {hostname} with id {server_id}")
@@ -158,13 +162,16 @@ async def home(path):
     # Get the nearest server for the request
     nearest_server = ch.get_nearest_server(request_node)
     
-    if nearest_server is None:
-        return "No servers available", 503
-    else:
-        server_hostname = nearest_server.hostname
-        # Forward the request to the nearest server
+    server_hostname = nearest_server.hostname
+    # Forward the request to the nearest server
+    try:
         async with httpx.AsyncClient() as client:
             response = await client.get(f"http://{server_hostname}:8080/{path}")
+    except:
+        await handle_failure()
+        # access request object
+        url = request.url
+        return redirect(url, code=307)
 
     # Return the response from the server
     return response.content, response.status_code
@@ -197,6 +204,44 @@ def remove_server(node_name):
         print("Successfully removed server container")
         print("Output:", result.stdout)
         return "success"
+
+
+async def handle_failure():
+    global next_server_id
+    server_list = ch.get_servers()
+
+    timeout = httpx.Timeout(5.0, read=5.0)
+    for server in server_list:
+        hostname = server.hostname
+        for _ in range(3):  # retry 3 times
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.get(f"http://{hostname}:8080/heartbeat")
+                if response.status_code == 200:
+                    break  # server is alive
+            except httpx.HTTPError:
+                pass  # ignore exceptions and try again
+        
+        else:  # break statement is not executed
+            print(f"Server {hostname} is down!")            
+            
+            # remove entry from consistent hashing ring
+            ch.remove_server(hostname)
+
+            # spawn new server
+            server_id = next_server_id
+            next_server_id += 1
+            new_hostname = hostname + str(server_id)
+            res = spawn_server(new_hostname, new_hostname, 'myserver')
+            time.sleep(1)
+
+            if res == "success":
+                server_node = ServerNode(server_id, new_hostname)
+                ch.add_server(server_node)
+                print(f"Succesfully added server {new_hostname} with id {server_id}")
+            else:
+                print(f"Unable to add server {new_hostname}!")
+
 
 if __name__ == '__main__':
     

@@ -4,9 +4,6 @@ FROM python:3.8-slim-buster
 # Set the working directory in the container to /app
 WORKDIR /app
 
-# copy the current directory contents into the container at /app
-COPY . /app
-
 # Install docker cli to spawn other containers
 RUN apt-get update
 RUN apt-get -y install sudo

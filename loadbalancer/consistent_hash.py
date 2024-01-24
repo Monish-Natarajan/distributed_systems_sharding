@@ -23,7 +23,10 @@ class ConsistentHashing:
         pass
 
     def remove_server(self, key):
-        self.server_list.remove(key)
+        for node in self.server_list:
+            if node.hostname == key:
+                self.server_list.remove(node)
+                break
 
     def get_nearest_server(self, key):
         # Get the node responsible for a given key
@@ -34,8 +37,9 @@ class ConsistentHashing:
             return random.choice(self.server_list)
         
     def search_server(self, key):
-        if key in self.server_list:
-            return True
+        for node in self.server_list:
+            if node.id == key:
+                return True
         else:
             return False
 

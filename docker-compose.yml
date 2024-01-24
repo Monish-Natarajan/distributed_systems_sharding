@@ -8,6 +8,7 @@ services:
       - "5000:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ./loadbalancer:/app
     privileged: true
     networks:
       - mynet
