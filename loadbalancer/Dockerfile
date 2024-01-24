@@ -8,6 +8,7 @@ RUN apt-get update
 RUN apt-get -y install sudo
 
 RUN apt-get -y install apt-transport-https ca-certificates curl gnupg2 software-properties-common
+RUN install -m 0755 -d /etc/apt/keyrings
 RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 RUN chmod a+r /etc/apt/keyrings/docker.gpg
 RUN echo \
@@ -26,15 +27,18 @@ EXPOSE 5000
 RUN apt-get install -y cmake
 # install Boost::Python library
 RUN apt-get install -y libboost-python-dev
-
+RUN apt-get install -y gdb
+RUN apt-get install -y libpython3-dbg
 WORKDIR /app
 COPY . .
 # Build the C++ code
 WORKDIR /app/build
-RUN cmake ..
+# Do DEBUG build
+RUN cmake -DCMAKE_BUILD_TYPE=Release ..
 RUN cmake --build .
 WORKDIR /app
 
 
+# set
 # Run lb.py when the container launches
-CMD ["python", "lb.py"]
+CMD python lb.py 2>/dev/null 1>/dev/null

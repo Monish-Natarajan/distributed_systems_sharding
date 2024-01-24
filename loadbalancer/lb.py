@@ -8,16 +8,18 @@ import sys
 import string
 import asyncio
 import logging
-
 from consistent_hasher import ConsistentHashing
 
+lock = asyncio.Lock()
 
 def generate_hostname(n):
     # random hostname generated of len < n
-    return ''.join(random.choices(string.ascii_lowercase, k=random.randint(1, n)))
+    return "server_" + ''.join(random.choices(string.ascii_lowercase, k=random.randint(4, n)))
 
 
 app = Quart(__name__)
+
+logging.getLogger('werkzeug').disabled = True
 
 
 @app.route('/rep', methods=['GET'])
@@ -27,11 +29,13 @@ def rep():
 
     # Create the response data
     data = {
-        'message': {
-            "N": len(server_hostnames),
-            "replicas": server_hostnames
-        },
-        'status': "successful"
+        'response': {
+            'message': {
+                "N": len(server_hostnames),
+                "replicas": str(list(server_hostnames))
+            },
+            'status': "successful"
+        }
     }
     return jsonify(data), 200
 
@@ -42,7 +46,6 @@ async def add():
     print("Received add request")
 
     json_data = await request.json
-    print("Request data:", json_data)
 
     n = json_data['n']
     hostnames = set(json_data['hostnames'])
@@ -89,7 +92,6 @@ async def rem():
     print("Received remove request")
 
     json_data = await request.json
-    print("Request data:", json_data)
 
     n = json_data['n']
     hostnames = set(json_data['hostnames'])
@@ -173,7 +175,8 @@ async def home(path):
 
     # Get the nearest server for the request
     nearest_server = ch.get_nearest_server(request_id)
-
+    if nearest_server == '':
+        raise Exception("Fatal: No servers in the ring")
     # Forward the request to the nearest server
     try:
         async with httpx.AsyncClient() as client:
@@ -182,7 +185,6 @@ async def home(path):
         print(f"Server {nearest_server} didn't respond")
         # don't handle this failure multiple times, only once
         # Need to use mutex lock to ensure this
-        lock = asyncio.Lock()
         # handle each failure one at a time
         async with lock:
             if nearest_server in ch.get_servers():
@@ -210,13 +212,12 @@ def spawn_container(hostname):
         print("Error:", result.stderr)
         return "failure"
     else:
-        print("Successfully started server container")
-        print("Output:", result.stdout)
+        print("Successfully started server container with hostname ", hostname)
         return "success"
 
 
 def remove_container(node_name):
-    command = f'docker stop {node_name} && docker rm {node_name}'
+    command = f'docker rm --force {node_name}'
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
 
     if result.returncode != 0:
@@ -283,18 +284,5 @@ async def handle_failure(hostname):
             print(f"Unable to add server {new_hostname}!")
 
 
-if __name__ == '__main__':
-
-    # initialize the load balancer with 3 servers
-    N = 3
-    server_hostnames = ["server1", "server2", "server3"]
-
-    ch = ConsistentHashing()
-
-    for i in range(N):
-        server_hostname = server_hostnames[i]
-        # assume the following calls execute without any errors
-        spawn_container(server_hostname)
-        ch.add_server(server_hostname)
-    app.logger.setLevel(logging.ERROR)
-    app.run(host='0.0.0.0', port=5001)
+ch = ConsistentHashing()
+app.run(host='0.0.0.0', port=5001)

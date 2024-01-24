@@ -3,11 +3,14 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <mutex>
 #include <unordered_map>
 #include <vector>
 #include <random>
+#include <iostream>
 #include <ctime>
 #include <map>
+#include <cassert>
 
 namespace Hashing {
     // generate random string
@@ -28,6 +31,7 @@ namespace Hashing {
     uint64_t constexpr INVALID_ID = 0xFFFFFFFFFFFFFFFF;
 
     class Server;
+
     class VirtualServer;
 
     using RingDomain = uint64_t; // what type of variable is used to index the ring?
@@ -36,7 +40,7 @@ namespace Hashing {
 
     class VirtualServer {
         uint64_t id = INVALID_ID;
-        Server const * const owner;
+        Server const *const owner;
         // the position inside the ring
         RingDomain index = 0;
 
@@ -45,7 +49,7 @@ namespace Hashing {
             return index;
         }
 
-        void set_index(RingDomain ind) { this->index = ind; }
+        void set_index(RingDomain ind) { index = ind; }
 
         VirtualServer(uint64_t const id, Server const *const owner) : id(id), owner(owner) {
         }
@@ -58,15 +62,17 @@ namespace Hashing {
             return id;
         }
     };
+
     class Server {
         std::string hostname;
         uint64_t id = INVALID_ID;
         std::vector<VirtualServer> virtualServers;
 
     public:
-        Server(){}
+        Server() {}
+
         Server(std::string_view const hostname, uint64_t const id, std::size_t numVirtualServers) : hostname(hostname),
-            id(id) {
+                                                                                                    id(id) {
             for (uint64_t i = 0; i < numVirtualServers; i++) {
                 virtualServers.emplace_back(i, this);
             }
@@ -76,16 +82,16 @@ namespace Hashing {
             return id;
         }
 
-        [[nodiscard]] auto get_hostname() const {
+        [[nodiscard]] auto const &get_hostname() const {
             return hostname;
         }
 
-        [[nodiscard]] auto begin() const {
-            return virtualServers.cbegin();
+        [[nodiscard]] auto begin() {
+            return virtualServers.begin();
         }
 
-        [[nodiscard]] auto end() const {
-            return virtualServers.cend();
+        [[nodiscard]] auto end() {
+            return virtualServers.end();
         }
     };
 
@@ -113,12 +119,13 @@ namespace Hashing {
         }
 
     public:
-        consistent_hasher(){
+        consistent_hasher() {
             std::random_device rd;
             std::mt19937 rng(rd()); // Seed the random number generator with current time
             std::uniform_int_distribution<uint64_t> distribution(0, 0xFFFFFF); // ASCII values for lowercase letters
             nextServerId = distribution(rng);
         }
+
         void add_server(std::string suggested_hostname) {
             std::lock_guard<std::mutex> guard(lock);
             // check if suggested hostname is already in use
@@ -139,6 +146,7 @@ namespace Hashing {
                     if (ring.contains(index)) continue;
                     else {
                         ring[index] = &virtualServer;
+                        virtualServer.set_index(index);
                         inserted = true;
                         break;
                     }
@@ -154,7 +162,7 @@ namespace Hashing {
             std::lock_guard<std::mutex> guard(lock);
             if (ring.empty()) {
                 // no available server on the ring, return empty hostname
-                return std::string();
+                return "";
             }
             auto index = hash(req);
             // check the ring starting at index, and using binary search, check for the immediately succeeding
@@ -166,7 +174,7 @@ namespace Hashing {
                 it = ring.begin();
             }
             auto const &virtualServer = it->second;
-            return virtualServer->get_owner()->get_hostname();
+            return virtualServer->get_owner()->get_hostname().c_str();
         }
 
         void remove_server(std::string const &hostname) {
@@ -186,11 +194,16 @@ namespace Hashing {
         auto get_server_list() const {
             std::lock_guard<std::mutex> guard(lock);
             std::vector<std::string> resultantList;
-            resultantList.reserve(servers.size());
-            for (auto const &val: servers) {
-                resultantList.push_back(val.second->get_hostname());
+            try {
+                for (auto const &val: servers) {
+                    resultantList.push_back(val.second->get_hostname());
+                }
+            } catch (std::exception &e) {
+                std::cerr << "C++: Error while retrieving server list -- servers.size() = " << servers.size() << "\n";
+                std::cerr << e.what() << std::endl;
             }
             return resultantList;
+
         }
     };
 }

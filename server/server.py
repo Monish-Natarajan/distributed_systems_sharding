@@ -12,7 +12,7 @@ server_identifier = os.environ['HOSTNAME']
 async def home():
     data = {
         'response': {
-            'message': 'Hello from server number: {}'.format(server_identifier),
+            'message': 'Hello from server: {}'.format(server_identifier),
             'status': 'successful',
         }
     }
