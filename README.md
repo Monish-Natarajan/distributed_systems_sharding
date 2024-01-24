@@ -33,6 +33,8 @@ to add/remove servers, or print the current list of servers.
 
 ```
 # need to run only once
+python -m venv venv
+source venv/bin/activate
 make setup
 
 # run the following commands in the order given

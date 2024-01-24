@@ -176,7 +176,8 @@ async def home(path):
     # Get the nearest server for the request
     nearest_server = ch.get_nearest_server(request_id)
     if nearest_server == '':
-        raise Exception("Fatal: No servers in the ring")
+        print("Couldn't route request: No servers available")
+        return "No servers available", 503
     # Forward the request to the nearest server
     try:
         async with httpx.AsyncClient() as client:
