@@ -100,7 +100,7 @@ namespace Hashing {
         static RingDomain hash(Request i) {
             return (i * i + 2 * i + 17) % numSlots;
         }
-
+    public:
         void add_server(std::string suggested_hostname) {
             // check if suggested hostname is already in use
             while (servers.contains(suggested_hostname)) {
