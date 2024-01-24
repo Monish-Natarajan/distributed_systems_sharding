@@ -10,7 +10,7 @@ import os
 from consistent_hash import ConsistentHashing, RequestNode, ServerNode
 
 app = Quart(__name__)
-next_port_no = 18084
+# next_port_no = 18084
 next_server_id = 4
 
 @app.route('/rep', methods=['GET'])
@@ -179,9 +179,9 @@ async def home(path):
 
 def spawn_server(node_name, host_name, server_image):
     global next_port_no
-    command = f'docker run --name {node_name} --network mynet --network-alias {host_name} -e HOSTNAME=host_name -e SERVER_IDENTIFIER={node_name} -p {next_port_no}:8080 -d {server_image}'
+    command = f'docker run --name {node_name} --network mynet --network-alias {host_name} -e HOSTNAME=host_name -e SERVER_IDENTIFIER={node_name} -d {server_image}'
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
-    next_port_no += 1
+    # next_port_no += 1
 
     if result.returncode != 0:
         print("Unable to start server container")

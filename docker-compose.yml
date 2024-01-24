@@ -16,8 +16,8 @@ services:
     build: ./server
     image: myserver
     container_name: server1
-    ports:
-      - "8081:8080"
+    # ports:
+    #   - "8081:8080"
     environment:
       - HOSTNAME=server1
       - SERVER_IDENTIFIER=server1
@@ -27,8 +27,8 @@ services:
     build: ./server
     image: myserver
     container_name: server2
-    ports:
-      - "8082:8080"
+    # ports:
+    #   - "8082:8080"
     environment:
       - HOSTNAME=server2
       - SERVER_IDENTIFIER=server2
@@ -37,8 +37,8 @@ services:
   server3:
     build: ./server
     image: myserver
-    ports:
-      - "8083:8080"
+    # ports:
+    #   - "8083:8080"
     container_name: server3
     environment:
       - HOSTNAME=server3
