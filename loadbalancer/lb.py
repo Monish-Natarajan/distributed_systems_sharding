@@ -4,6 +4,7 @@ import httpx
 import random
 import subprocess
 import sys
+import string
 import os
 from consistent_hash import ConsistentHashing, RequestNode, ServerNode
 
@@ -47,10 +48,9 @@ async def add():
         }
         return jsonify(data), 400
 
-    # handle clashes and incomplete list cases
-    pass
-
-    assert len(hostnames) == n
+    while len(hostnames) < n:
+        # append random hostnames of length <= 10
+        hostnames.append(''.join(random.choices(string.ascii_lowercase, k = random.randint(1, 10))))    
 
     # add the requested servers
     for hostname in hostnames:
@@ -113,7 +113,7 @@ async def rem():
                 print(f"Succesfully removed server {hostname} with id {server_id}")
             except Exception as e:
                 print(f"An error occurred while removing server {hostname} with id {server_id}: {e}")
-          
+        
         else:
             print(f"Unable to remove server {hostname}")
             # return error response
