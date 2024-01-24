@@ -19,7 +19,7 @@ async def launch_requests():
     async with aiohttp.ClientSession() as session:
         tasks = [make_request(session, f'http://localhost:{PORT_NO}/home') for _ in range(10000)]
         results = []
-        
+
         # with tqdm.tqdm(total=len(tasks)) as pbar:
         #     for f in asyncio.as_completed(tasks):
         #         result = await f
@@ -148,35 +148,19 @@ async def a2():
     plt.tight_layout()
     ax.set_xlabel('Number of Servers')
     ax.set_ylabel('Number of Requests per Server')
-
-
-def a3():
-    print(SEPARATOR)
-    print("| Running a3 |")
-    print(SEPARATOR)
-    # plot a line plot of 10000/N for N= 2 to 6
-    fig, ax = plt.subplots()
-    y = [10000 / i for i in range(2, 7)]
-    x = [i for i in range(2, 7)]
-    ax.plot(x, y)
-    plt.tight_layout()
-    ax.set_xlabel('Number of Servers')
-    ax.set_ylabel('Number of Requests per Server')
+    plt.savefig(f'output/a2_line_plot.png')
 
 
 async def main():
-    # user prompt for a1, a2, a3
-    user_input = input("Enter a1, a2 or a3 (or 'done' to exit): ")
+    user_input = input("Enter aor a2 (or 'done' to exit): ")
     while user_input != 'done':
         if user_input == 'a1':
             await a1()
         elif user_input == 'a2':
             await a2()
-        elif user_input == 'a3':
-            a3()
         else:
             print("Invalid input")
-        user_input = input("Enter a1, a2 or a3 (or 'done' to exit): ")
+        user_input = input("Enter a1 or a2 (or 'done' to exit): ")
 
 
 if __name__ == '__main__':
