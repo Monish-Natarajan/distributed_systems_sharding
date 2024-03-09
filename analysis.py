@@ -152,7 +152,7 @@ async def a2():
 
 
 async def main():
-    user_input = input("Enter aor a2 (or 'done' to exit): ")
+    user_input = input("Enter a1 or a2 (or 'done' to exit): ")
     while user_input != 'done':
         if user_input == 'a1':
             await a1()
