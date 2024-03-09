@@ -4,7 +4,6 @@ setup:
 	@docker build -t server ./server
 
 run:
-	@docker build -t server ./server
 	docker compose up -d
 stop:
 	@docker compose down --rmi local

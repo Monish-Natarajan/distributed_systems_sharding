@@ -4,7 +4,7 @@ services:
     build: ./loadbalancer
     container_name: load_balancer
     ports:
-      - "5000:5001"
+      - "5001:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
     # define a network called mynet

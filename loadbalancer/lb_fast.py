@@ -1,5 +1,8 @@
-from quart import Quart, jsonify, redirect
-from quart import request, Response
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
+import uvicorn
+
 import httpx
 import random
 import time
@@ -8,7 +11,16 @@ import sys
 import string
 import asyncio
 import logging
+
+from typing import List
+
 from consistent_hasher import ConsistentHashing
+
+
+class LoadBalRequest(BaseModel):
+    n: int
+    hostnames: List[str]
+
 
 lock = asyncio.Lock()
 
@@ -17,12 +29,12 @@ def generate_hostname(n):
     return "server_" + ''.join(random.choices(string.ascii_lowercase, k=random.randint(4, n)))
 
 
-app = Quart(__name__)
+app = FastAPI()
 
 logging.getLogger('werkzeug').disabled = True
 
 
-@app.route('/rep', methods=['GET'])
+@app.get('/rep')
 def rep():
     # Get the list of servers from the consistent hashing object
     server_hostnames = ch.get_servers()
@@ -37,18 +49,16 @@ def rep():
             'status': "successful"
         }
     }
-    return jsonify(data), 200
+    return JSONResponse(content=data, status_code=200)
 
 
 
-@app.route('/add', methods=['POST'])
-async def add():
+@app.post('/add')
+async def add(request_body: LoadBalRequest):
     print("Received add request")
 
-    json_data = await request.json
-
-    n = json_data['n']
-    hostnames = set(json_data['hostnames'])
+    n = request_body.n
+    hostnames = set(request_body.hostnames)
 
     # handling error cases
     if len(hostnames) > n:
@@ -56,7 +66,7 @@ async def add():
             'message': "<Error> Length of hostname list is more than newly added instances",
             'status': "failure"
         }
-        return jsonify(data), 400
+        raise HTTPException(status_code=400, detail=data)
 
     while len(hostnames) < n:
         # append random hostnames of length <= 10
@@ -81,20 +91,18 @@ async def add():
                 'message': f"<Error> Unable to add server {hostname}",
                 'status': "failure"
             }
-            return jsonify(data), 400
+            raise HTTPException(status_code=400, detail=data)
 
     return rep()
 
 
 # TODO : handle error cases
-@app.route('/rm', methods=['POST'])
-async def rem():
+@app.delete('/rm')
+async def rem(request_body: LoadBalRequest):
     print("Received remove request")
 
-    json_data = await request.json
-
-    n = json_data['n']
-    hostnames = set(json_data['hostnames'])
+    n = request_body.n
+    hostnames = set(request_body.hostnames)
 
     # handling error cases
     if len(hostnames) > n:
@@ -102,7 +110,7 @@ async def rem():
             'message': "<Error>  Length of hostname list is more than removable instances",
             'status': "failure"
         }
-        return jsonify(data), 400
+        raise HTTPException(status_code=400, detail=data)
 
     # ensure hostnames are valid
     # is every hostname in the hostnames set in the ring?
@@ -113,7 +121,7 @@ async def rem():
                 'message': f"<Error>  Hostname {hostname} is not in the ring",
                 'status': "failure"
             }
-            return jsonify(data), 400
+            raise HTTPException(status_code=400, detail=data)
 
     # handle incomplete list case
     # we need to delete more servers if len(hostnames) < n
@@ -148,20 +156,20 @@ async def rem():
 
 
 # FOR TESTING ONLY
-@app.route('/test', methods=['GET'])
+@app.get('/test')
 def test():
-    return "lb is alive", 200
+    return JSONResponse(content="Test successful", status_code=200)
 
 
 # returns  "204 No Content" for favicon.ico
-@app.route('/favicon.ico')
+@app.get('/favicon.ico')
 def favicon():
-    return Response(status=204)
+    return JSONResponse(status=204)
 
 
 # forwarding requests to the nearest server
-@app.route('/<path>', methods=['GET'])
-async def home(path):
+@app.get('/{path}')
+async def home(path: str, request: Request):
     if path != "home":
         data = {
             'Response': {
@@ -169,7 +177,7 @@ async def home(path):
                 'status': "failure"
             }
         }
-        return jsonify(data), 400
+        raise HTTPException(status_code=400, detail=data)
 
     request_id = random.randint(100000, 1000000)  # random id temporarily
 
@@ -177,7 +185,7 @@ async def home(path):
     nearest_server = ch.get_nearest_server(request_id)
     if nearest_server == '':
         print("Couldn't route request: No servers available")
-        return "No servers available", 503
+        return JSONResponse(content="No servers available", status_code=503)
     # Forward the request to the nearest server
     try:
         async with httpx.AsyncClient() as client:
@@ -192,11 +200,12 @@ async def home(path):
                 await handle_failure(nearest_server)
 
         # access request object
-        url = request.url
-        return redirect(url, code=307)  # let's try again, since we have handled the failure
+        url = str(request.url)
+        print("Redirecting to {}".format(url))
+        return RedirectResponse(url=url, status_code=307)  # let's try again, since we have handled the failure
 
     # Return the response from the server
-    return response.content, response.status_code
+    return  JSONResponse(content = response.content.decode('utf-8'), status_code = response.status_code)
 
 
 def spawn_container(hostname):
@@ -264,7 +273,7 @@ async def handle_failure(hostname):
         print(f"handle_failure(): Server {hostname} is down!")
 
         # spawn new server with a random hostname
-        new_hostname = hostname
+        new_hostname = generate_hostname(10)
 
         # keep trying to generate a hostname that's not already in use
         # why did I use ch.get_servers() here? Just in case an admin command is executed while this function is running
@@ -286,8 +295,6 @@ async def handle_failure(hostname):
 
 
 ch = ConsistentHashing()
-app.run(host='0.0.0.0', port=5001)
 
-# add 2 servers
-ch.add_server("server_1")
-
+if __name__ == "__main__":
+    uvicorn.run("lb_fast:app", host="127.0.0.1", port=5001, reload=True)

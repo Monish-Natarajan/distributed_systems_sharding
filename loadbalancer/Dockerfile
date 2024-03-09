@@ -19,7 +19,7 @@ RUN apt-get update
 RUN apt-get -y install docker-ce-cli
 
 # Install necessary packages
-RUN pip install quart
+RUN pip install fastapi uvicorn
 RUN pip install httpx
 EXPOSE 5000
 
@@ -40,5 +40,5 @@ WORKDIR /app
 
 
 # Run lb.py when the container launches
-CMD ["python", "lb.py"]
+CMD ["python", "lb_fast.py"]
 #CMD python -m cProfile -o profiling.txt lb.py && less profiling.txt

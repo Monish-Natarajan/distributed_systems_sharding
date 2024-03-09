@@ -8,6 +8,6 @@ WORKDIR /app
 COPY . /app
 
 # Install any needed packages specified in requirements.txt
-RUN pip install quart
+RUN pip install fastapi uvicorn
 # Run server.py when the container launches
-CMD ["python", "server.py"]
+CMD ["python", "server_fast.py"]
