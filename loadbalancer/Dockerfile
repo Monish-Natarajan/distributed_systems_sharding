@@ -21,7 +21,7 @@ RUN apt-get -y install docker-ce-cli
 # Install necessary packages
 RUN pip install fastapi uvicorn
 RUN pip install httpx
-EXPOSE 5000
+EXPOSE 5001
 
 # C++
 RUN apt-get install -y cmake

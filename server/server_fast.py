@@ -26,4 +26,4 @@ def heartbeat():
     return {}
 
 if __name__ == "__main__":
-    uvicorn.run("server_fast:app", host="0.0.0.0", port=8080, reload=True)
+    uvicorn.run("server_fast:app", host="0.0.0.0", port=8080)
