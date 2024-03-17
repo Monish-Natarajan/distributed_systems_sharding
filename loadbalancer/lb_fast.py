@@ -1,37 +1,85 @@
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse, RedirectResponse
-from pydantic import BaseModel
 import uvicorn
 
 import httpx
 import random
 import time
 import subprocess
-import sys
 import string
 import asyncio
-import logging
+import log
+import database
 
-from typing import List
+from request_models import *
 
 from consistent_hasher import ConsistentHashing
-
-
-class LoadBalRequest(BaseModel):
-    n: int
-    hostnames: List[str]
-
-
-lock = asyncio.Lock()
 
 def generate_hostname(n):
     # random hostname generated of len < n
     return "server_" + ''.join(random.choices(string.ascii_lowercase, k=random.randint(4, n)))
 
 
-app = FastAPI()
 
-logging.getLogger('werkzeug').disabled = True
+app = FastAPI()
+chLock = asyncio.Lock()
+ch = ConsistentHashing()
+shardRing = {} # maps shard_id to a consistent hashing object
+#logging.getLogger('werkzeug').disabled = True
+
+# function for reading low to high student IDs from a shard
+async def read_from_shard(shard_id: str, low: int, high: int):
+    chRing = shardRing[shard_id]
+    # generate random 6 digit number
+    request_id = random.randint(100000, 1000000)
+    # get the nearest server for the request
+    nearest_server = chRing.get_nearest_server(request_id)
+    if nearest_server == '':
+        log("Couldn't route request: No servers available")
+        return JSONResponse(content="No servers available", status_code=503)
+    # Forward the request to the nearest server
+    try:
+        async with httpx.AsyncClient() as client:
+            request = {
+                "shard": shard_id,
+                "Stud_id": {
+                    "low": low,
+                    "high": high
+                }
+            }
+            response = (await client.post(f"http://{nearest_server}:8080/read", json=request)).json()
+            
+            if response['status'] == "success":
+                return response['data']
+            else:
+                raise Exception(f"read_from_shard() failed for shard {shard_id} with status {response['status']}")
+    except Exception as e:
+        log("Error while reading from shard: ", e)
+
+
+@app.post('/read')
+async def rep(request_body: ReadRequest):
+    low = request_body.Stud_id['low']
+    high = request_body.Stud_id['high']
+    # check which shard to read low from
+    all_shards = database.get_shards() # List[tuples] sorted in ascending order of Stud_id_low
+    shards_queried = []
+    records = []
+    for shard in all_shards:
+        lowerEnd = int(shard[0])
+        upperEnd = lowerEnd + int(shard[2]) - 1
+        if low >= lowerEnd and low <= upperEnd:
+            # read the relevant records from this shard
+            records += read_from_shard(shard[1], low, min(high, upperEnd))
+            shards_queried.append(shard[1])
+            low = upperEnd + 1
+        if low > high:
+            break
+    response = {
+        "shards_queried": shards_queried,
+        "data": records,
+        "status": "success"
+    }
 
 
 @app.get('/rep')
@@ -54,52 +102,53 @@ def rep():
 
 
 @app.post('/add')
-async def add(request_body: LoadBalRequest):
-    print("Received add request")
+async def add(request_body: AdminRequest):
+    with chLock: # ensure 
+        log("Received add request")
 
-    n = request_body.n
-    hostnames = set(request_body.hostnames)
+        n = request_body.n
+        hostnames = set(request_body.hostnames)
 
-    # handling error cases
-    if len(hostnames) > n:
-        data = {
-            'message': "<Error> Length of hostname list is more than newly added instances",
-            'status': "failure"
-        }
-        raise HTTPException(status_code=400, detail=data)
-
-    while len(hostnames) < n:
-        # append random hostnames of length <= 10
-        hostnames.add(generate_hostname(10))
-
-        # add the requested servers
-    for hostname in hostnames:
-        res = spawn_container(hostname)
-
-        if res == "success":
-            try:
-                ch.add_server(hostname)
-                print(f"Succesfully added server {hostname}")
-            except Exception as e:
-                print(f"An error occurred while adding server {hostname}: {e}")
-                ch.remove_server(hostname)
-
-        else:
-            print(f"Unable to add server {hostname}")
-            # return error response
+        # handling error cases
+        if len(hostnames) > n:
             data = {
-                'message': f"<Error> Unable to add server {hostname}",
+                'message': "<Error> Length of hostname list is more than newly added instances",
                 'status': "failure"
             }
             raise HTTPException(status_code=400, detail=data)
 
-    return rep()
+        while len(hostnames) < n:
+            # append random hostnames of length <= 10
+            hostnames.add(generate_hostname(10))
+
+            # add the requested servers
+        for hostname in hostnames:
+            res = spawn_container(hostname)
+
+            if res == "success":
+                try:
+                    ch.add_server(hostname)
+                    log(f"Succesfully added server {hostname}")
+                except Exception as e:
+                    log(f"An error occurred while adding server {hostname}: {e}")
+                    ch.remove_server(hostname)
+
+            else:
+                log(f"Unable to add server {hostname}")
+                # return error response
+                data = {
+                    'message': f"<Error> Unable to add server {hostname}",
+                    'status': "failure"
+                }
+                raise HTTPException(status_code=400, detail=data)
+
+        return rep()
 
 
 # TODO : handle error cases
 @app.delete('/rm')
-async def rem(request_body: LoadBalRequest):
-    print("Received remove request")
+async def rem(request_body: AdminRequest):
+    log("Received remove request")
 
     n = request_body.n
     hostnames = set(request_body.hostnames)
@@ -140,17 +189,17 @@ async def rem(request_body: LoadBalRequest):
     for hostname in hostnames:
         try:
             ch.remove_server(hostname)
-            print(f"Succesfully removed server {hostname} from hash ring")
+            log(f"Succesfully removed server {hostname} from hash ring")
         except Exception as e:
-            print(f"An error occurred while removing server {hostname} from hash ring: {e}")
+            log(f"An error occurred while removing server {hostname} from hash ring: {e}")
         # now that we have removed the server from the hash ring, we can stop the container
         res = remove_container(hostname)
 
         if res == "success":
-            print(f"Successfully removed server {hostname} container")
+            log(f"Successfully removed server {hostname} container")
 
         else:
-            print(f"Unable to remove server {hostname} container")
+            log(f"Unable to remove server {hostname} container")
 
     return rep()
 
@@ -184,24 +233,24 @@ async def home(path: str, request: Request):
     # Get the nearest server for the request
     nearest_server = ch.get_nearest_server(request_id)
     if nearest_server == '':
-        print("Couldn't route request: No servers available")
+        log("Couldn't route request: No servers available")
         return JSONResponse(content="No servers available", status_code=503)
     # Forward the request to the nearest server
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(f"http://{nearest_server}:8080/{path}")
     except:
-        print(f"Server {nearest_server} didn't respond")
+        log(f"Server {nearest_server} didn't respond")
         # don't handle this failure multiple times, only once
-        # Need to use mutex lock to ensure this
-        # handle each failure one at a time
-        async with lock:
+        # Need to use mutex lock to ensure the ConsistentHashing ring
+        # is not modified by anyone else
+        with chLock:
             if nearest_server in ch.get_servers():
-                await handle_failure(nearest_server)
+                handle_failure(nearest_server)
 
         # access request object
         url = str(request.url)
-        print("Redirecting to {}".format(url))
+        log("Redirecting to {}".format(url))
         return RedirectResponse(url=url, status_code=307)  # let's try again, since we have handled the failure
 
     # Return the response from the server
@@ -214,15 +263,15 @@ def spawn_container(hostname):
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
     except Exception as e:
-        print(f"An error occurred while trying to start server container {hostname}: {e}")
+        log(f"An error occurred while trying to start server container {hostname}: {e}")
         return "failure"
 
     if result.returncode != 0:
-        print("Unable to start server container")
-        print("Error:", result.stderr)
+        log("Unable to start server container")
+        log("Error:", result.stderr)
         return "failure"
     else:
-        print("Successfully started server container with hostname ", hostname)
+        log("Successfully started server container with hostname ", hostname)
         return "success"
 
 
@@ -231,17 +280,17 @@ def remove_container(node_name):
     result = subprocess.run(command, shell=True, capture_output=True, text=True)
 
     if result.returncode != 0:
-        print("Unable to removed server container")
-        print("Error:", result.stderr)
+        log("Unable to removed server container")
+        log("Error:", result.stderr)
         return "failure"
     else:
-        print("Successfully removed server container")
-        print("Output:", result.stdout)
+        log("Successfully removed server container")
+        log("Output:", result.stdout)
         return "success"
 
 
 # checks if any of the servers are down, is called when a server doesn't respond
-async def handle_failure(hostname):
+def handle_failure(hostname):
     # if no hostname provided, error out
     if hostname is None:
         raise Exception("Fatal: No hostname provided to handle_failure()")
@@ -253,14 +302,14 @@ async def handle_failure(hostname):
     is_alive = False
     for _ in range(3):  # retry 3 times
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
-                response = await client.get(f"http://{hostname}:8080/heartbeat")
+            with httpx.Client(timeout=timeout) as client:
+                response = client.get(f"http://{hostname}:8080/heartbeat")
             if response.status_code == 200:
                 is_alive = True
                 break  # server is alive
         except Exception as e:
             # ignore exceptions and try again
-            print(
+            log(
                 f"handle_failure(): Exception raised while trying to check for liveliness of server {hostname}, "
                 f"trying again: {e}")
 
@@ -270,7 +319,7 @@ async def handle_failure(hostname):
         return
     else:
         # server is dead, spawn a new server to replace it
-        print(f"handle_failure(): Server {hostname} is down!")
+        log(f"handle_failure(): Server {hostname} is down!")
 
         # spawn new server with a random hostname
         new_hostname = generate_hostname(10)
@@ -286,15 +335,66 @@ async def handle_failure(hostname):
         if res == "success":
             try:
                 ch.add_server(new_hostname)
-                print(f"Succesfully added server {new_hostname} to replace {hostname}")
+                log(f"Succesfully added server {new_hostname} to replace {hostname}")
             except Exception as e:
-                print(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
+                log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
                 ch.remove_server(new_hostname)
         else:
-            print(f"Unable to add server {new_hostname}!")
+            log(f"Unable to add server {new_hostname}!")
 
+async def heartbeat_check():
+    while True:
+        log("Checking heartbeat")
+        with chLock:
+            server_list = ch.get_servers()
+            for server_hostname in server_list:
+                is_alive = False
+                for _ in range(3):
+                    try:
+                        with httpx.Client(timeout=httpx.Timeout(5)) as client:
+                            response = client.get(f"http://{server_hostname}:8080/heartbeat")
+                        if response.status_code == 200:
+                            is_alive = True
+                            break
+                    except Exception as e:
+                        log(f"heartbeat_check(): Exception raised wheile trying to check for liveliness of server {server_hostname}, "
+                              f"trying again: {e}")
+                if is_alive:
+                    log(f"{server_hostname} is alive -- passed heartbeat check")
+                else:
+                    # server is dead, spawn a new server to replace it
+                    log(f"handle_failure(): Server {server_hostname} is down!")
 
-ch = ConsistentHashing()
+                    # spawn new server with a random hostname
+                    new_hostname = generate_hostname(10)
+
+                    # keep trying to generate a hostname that's not already in use
+                    while new_hostname in ch.get_servers() or new_hostname in server_list:
+                        new_hostname = generate_hostname(10)
+
+                    res = spawn_container(new_hostname)
+                    time.sleep(1)
+
+                    if res == "success":
+                        try:
+                            ch.add_server(new_hostname)
+                            log(f"Succesfully added server {new_hostname} to replace {server_hostname}")
+                        except Exception as e:
+                            log(f"An error occurred while adding server {new_hostname} to replace {server_hostname}: {e}")
+                            ch.remove_server(new_hostname)
+                    else:
+                        log(f"Unable to add server {new_hostname} as a replacement for {server_hostname}!")
+        await asyncio.sleep(5 * 60) # sleep for 5 minutes and then perform a check
+        
+
+async def main():
+    loop = asyncio.get_event_loop()
+    config = uvicorn.Config("lb_fast:app", host="0.0.0.0", port=5001)
+    server = uvicorn.Server(config)
+    uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
+    loop.create_task(heartbeat_check)
+    await server.serve()
 
 if __name__ == "__main__":
-    uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
+    asyncio.run(main())
+    
