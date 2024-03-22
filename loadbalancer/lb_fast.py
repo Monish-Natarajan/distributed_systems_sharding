@@ -357,9 +357,8 @@ async def write(request_body: WriteRequest):
         status_code=200
     )
 
-@app.put('/update')
-async def update(request_body: UpdateRequest):
-    # identify which shard this student ID belongs to
+async def modify_record(request_body):
+    is_update: bool = (type(request_body) is UpdateRequest)
     shard_id = get_shard_id(request_body.Stud_id)
     if shard_id is None:
         return JSONResponse(
@@ -376,29 +375,47 @@ async def update(request_body: UpdateRequest):
     writeLock = shardDataMap[shard_id].writeLock
     with writeLock:
         servers = chRing.get_servers()
-        request = {
-            "shard": shard_id,
-            "Stud_id": request_body.Stud_id,
-            "data": request_body.data
-        }
+        if is_update:
+            request = {
+                "shard": shard_id,
+                "Stud_id": request_body.Stud_id,
+                "data": request_body.data
+            }
+        else:
+            request = {
+                "shard": shard_id,
+                "Stud_id": request_body.Stud_id
+            }
         serversUpdated: List[str] = []
         for server in servers:
             try:
                 with httpx.AsyncClient() as client:
-                    response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                    if is_update:
+                        response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                    else:
+                        response = (await client.delete(f"http://{server}:8080/del", json=request)).json()
                     if response['status'] != "success":
                         raise Exception(f"update() failed for shard {shard_id} with status {response['status']}")
+                    serversUpdated.append(server)
             except Exception as e:
                 log(f"Error while updating server {server}: ", e)
                 log("Rolling back updates to other servers in the shard")
                 for server in serversUpdated:
                     with httpx.AsyncClient() as client:
-                        request = {
-                            "shard": shard_id,
-                            "Stud_id": request_body.Stud_id,
-                            "data": oldRecord
-                        }
-                        response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                        if is_update:
+                            request = {
+                                "shard": shard_id,
+                                "Stud_id": request_body.Stud_id,
+                                "data": oldRecord
+                            }
+                            response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                        else:
+                            request = {
+                                "shard": shard_id,
+                                "curr_idx": 0,
+                                "data": [oldRecord]
+                            }
+                            response = (await client.post(f"http://{server}:8080/write", json=request)).json()
                         if response['status'] != "success":
                             log(f"Failed to rollback update to server {server}")
                             log(f"It is what it is. Cannot guarantee consistency of updates anymore. Shutting down load balancer")
@@ -419,9 +436,13 @@ async def update(request_body: UpdateRequest):
         status_code=200
     )
 
+@app.put('/update')
+async def update(request_body: UpdateRequest):
+    return await modify_record(request_body)
+
 @app.delete('/del')
 async def delete(request_body: DeleteRequest):
-    
+    return await modify_record(request_body)
 
 @app.get('/rep')
 def rep():
