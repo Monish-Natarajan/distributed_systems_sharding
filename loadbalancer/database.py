@@ -1,4 +1,5 @@
 import mysql.connector
+from mysql.connector import Error
 from typing import List
 import log
 
@@ -17,10 +18,10 @@ try:
     # create the ShardT and MapT tables if they don't exist
     with conn.cursor() as cursor:
         cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_Id_low INT, Shard_id VARCHAR(255), Shard_size INT, valid_idx INT)")
-        cursor.execute("CREATE TABLE IF NOT EXISTS MapT (Shard_id VARCHAR(255), Server_id VARCHAR(255)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS MapT (Shard_id VARCHAR(255), Server_id VARCHAR(255))")
         conn.commit()
-except Exception as e:
-    log(f"Error connecting to load_balancer_database: {e}")
+except Error as e:
+    print(f"Error connecting to load_balancer_database: {e}")
 
 class ShardRecord:
     Stud_Id_low: int
