@@ -559,7 +559,7 @@ async def main():
     loop = asyncio.get_event_loop()
     config = uvicorn.Config("lb_fast:app", host="0.0.0.0", port=5001)
     server = uvicorn.Server(config)
-    uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
+    #uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
     loop.create_task(heartbeat_check)
     await server.serve()
 
