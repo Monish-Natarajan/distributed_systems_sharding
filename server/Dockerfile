@@ -17,3 +17,6 @@ ENV MYSQL_DATABASE="distributed_systems"
 # Install any needed packages needed
 RUN pip install mysql.connector --break-system-packages
 EXPOSE 8080
+
+ENTRYPOINT ["/app/custom-entry.sh"]
+CMD ["mysqld"]
