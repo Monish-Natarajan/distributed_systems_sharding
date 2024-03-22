@@ -1,2 +1,2 @@
 #!/bin/bash
-python3 server_fast_mysql.py &
+python3 /app/server_fast_mysql.py &
