@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Dict
 
 # structures for deserializing JSON requests
@@ -37,7 +37,7 @@ class SchemaModel(BaseModel):
     dtypes: List[str]
 
 class InitRequest(BaseModel):
-    schema: SchemaModel
+    schema_: SchemaModel = Field(alias='schema')
     shards: ShardSchemaModel # List[Dict[str, int]]
     servers: Dict[str, List[str]] # server_name is the key, value is list of shards
 

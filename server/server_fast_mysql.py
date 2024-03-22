@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 from typing import List, Dict
 from typing_extensions import TypedDict
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import mysql.connector
 from mysql.connector import Error
 import os
@@ -35,7 +35,7 @@ class Schema(TypedDict):
     dtypes: List[str]
 
 class ConfigRequest(BaseModel):
-    schema: Schema
+    schema_: Schema = Field(alias='schema')
     shards: List[str]
 
 @app.post('/config')
@@ -301,7 +301,7 @@ def initialize():
 db_connection = mysql.connector.connect(
     host="localhost",
     user="root", 
-    password="mysql7319",  
+    password="testing",  
     database="distributed_systems"
 )
 

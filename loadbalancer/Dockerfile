@@ -22,7 +22,7 @@ RUN apt-get -y install docker-ce-cli
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y install python3-pip
 RUN apt-get -y install python3-fastapi python3-uvicorn python3-httpx
-RUN apt-get -y install python3-mysql-connector
+RUN apt-get -y install python3-mysql.connector
 #RUN pip install fastapi uvicorn
 #RUN pip install httpx
 EXPOSE 5001
@@ -43,9 +43,8 @@ RUN cmake -DCMAKE_BUILD_TYPE=Release ..
 RUN cmake --build .
 WORKDIR /app
 
+# Launch a mysql server
+CMD ["docker", "run", "--name", "mysql_server", "-e", "MYSQL_ROOT_PASSWORD=testing", "-e", "MYSQL_DATABASE=load_balancer_database", "-e", "MYSQL_USER=ravanan", "-e", "MYSQL_PASSWORD=testing", "-p", "3306:3306", "-d", "mysql:latest"]
 # Run lb.py when the container launches
 CMD ["python", "lb_fast.py"]
-# Run the following as CMD
-#  docker run --name mysql_server -e MYSQL_ROOT_PASSWORD=testing -e MYSQL_DATABASE=load_balancer_database -e MYSQL_USER=ravanan -e MYSQL_PASSWORD=testing -p 3306:3306 -d mysql:latest
-CMD ["docker", "run", "--name", "mysql_server", "-e", "MYSQL_ROOT_PASSWORD=testing", "-e", "MYSQL_DATABASE=load_balancer_database", "-e", "MYSQL_USER=ravanan", "-e", "MYSQL_PASSWORD=testing", "-p", "3306:3306", "-d", "mysql:latest"]
 #CMD python -m cProfile -o profiling.txt lb.py && less profiling.txt

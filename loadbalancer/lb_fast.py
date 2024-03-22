@@ -10,7 +10,7 @@ import string
 import asyncio
 import log
 import database
-
+from typing import List, Dict
 from request_models import InitRequest, AdminRequest, ReadRequest, WriteRequest, AddRequest, RemoveRequest
 from database import ShardRecord, MapRecord
 
@@ -65,7 +65,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
     # initialize the consistent hashing ring for each shard
     for shard in request_body.shards:
         shard_id = shard['Shard_id']
-        shardRing[shard_id] = ConsistentHashing()
+        shardDataMap[shard_id] = ShardData(shard_id)
 
     # spawn servers and add them to hashing ring of appropriate shards
     try:
@@ -76,7 +76,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
             if res == "success":
                 # add server to the consistent hashing ring
                 for shard in shards:
-                    shardRing[shard].add_server(server)
+                    shardDataMap[shard].ch.add_server(server)
                     print(f"Succesfully added server {server} to hash ring of shard {shard}")
     
     except Exception as e:
@@ -96,7 +96,6 @@ async def initalize_loadbalancer(request_body: InitRequest):
     
     return JSONResponse(content=reponse_data, status_code=200)
 
-
 @app.post('/add')
 async def add_servers(request_body: AddRequest):
     # add the new shards
@@ -104,15 +103,15 @@ async def add_servers(request_body: AddRequest):
         for shard in request_body.new_shards:
             record = ShardRecord(Stud_id_low=shard['Stud_id_low'], Shard_id=shard['Shard_id'], Shard_size=shard['Shard_size'], valid_idx=1)
             database.insert_shard_record(record)
-            shardRing[shard['Shard_id']] = ConsistentHashing()
+            shardDataMap[shard['Shard_id']] = ShardData(shard['Shard_id'])
 
         # add the new servers
-        new_server_names = request_body.keys()
-        for server_name in request_body.servers:
+        new_server_names = request_body.servers.keys()
+        for server_name in new_server_names:
             res = spawn_container(server_name)
             if res == "success":
                 for shard in request_body.servers[server_name]:
-                    shardRing[shard].add_server(server_name)
+                    shardDataMap[shard].ch.add_server(server_name)
             else:
                 print(f"Unable to add server {server_name}")
     except Exception as e:
@@ -168,8 +167,8 @@ async def remove_servers(request_body: RemoveRequest):
 
         for server_name in server_names:
             # remove server from the consistent hashing ring
-            for shard in shardRing.keys():
-                shardRing[shard].remove_server(server_name)
+            for shard in shardDataMap.keys():
+                shardDataMap[shard].ch.remove_server(server_name)
             
             # remove server from the MapT table
             database.delete_map_server(server_name)

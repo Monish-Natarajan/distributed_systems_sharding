@@ -1,13 +1,19 @@
-# Use an official Python runtime as a parent image
-FROM python:latest
+#Dockerfile
+ #----------------------
+FROM mysql:8.0-debian
 
-# Set the working directory in the container to /app
+COPY deploy.sh /always-initdb.d/
+#here the flask app deploy script is copied
 WORKDIR /app
-
-# Add the current directory contents into the container at /app
 COPY . /app
 
-# Install any needed packages specified in requirements.txt
-RUN pip install fastapi uvicorn
-# Run server.py when the container launches
-CMD ["python", "server_fast.py"]
+RUN apt-get update
+RUN apt-get install -y python3 python3-pip python3-venv python3-fastapi python3-uvicorn
+ 
+ENV MYSQL_ROOT_PASSWORD="testing"
+ENV MYSQL_DATABASE="distributed_systems"
+
+# create and use a virtual env
+# Install any needed packages needed
+RUN pip install mysql.connector --break-system-packages
+EXPOSE 8080
