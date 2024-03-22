@@ -11,7 +11,8 @@ import asyncio
 import log
 import database
 
-from request_models import *
+from request_models import InitRequest, AdminRequest, ReadRequest, WriteRequest, AddRequest, RemoveRequest
+from database import ShardRecord, MapRecord
 
 from consistent_hasher import ConsistentHashing
 
@@ -20,12 +21,180 @@ def generate_hostname(n):
     return "server_" + ''.join(random.choices(string.ascii_lowercase, k=random.randint(4, n)))
 
 
-
 app = FastAPI()
 chLock = asyncio.Lock()
 ch = ConsistentHashing()
 shardRing = {} # maps shard_id to a consistent hashing object
 #logging.getLogger('werkzeug').disabled = True
+
+
+# initializes the load balancer and spawns servers
+@app.post('/init')
+async def initalize_loadbalancer(request_body: InitRequest):
+    # insert into ShardT
+    try:
+        for shard in request_body.shards:
+            record = ShardRecord(Stud_id_low=shard['Stud_id_low'], Shard_id=shard['Shard_id'], Shard_size=shard['Shard_size'], valid_idx=1)
+            database.insert_shard_record(record)
+
+        # insert into MapT
+        for server, shards in request_body.servers.items():
+            for shard in shards:
+                record = MapRecord(Shard_id=shard, Server_id=server)
+                database.insert_map_record(record)
+    
+    except Exception as e:
+
+        # undo state changes, TBD
+
+        data = {
+            'message': f"<Error> An error occurred while initializing the load balancer: {e}",
+            'status': "failure"
+        }
+        raise HTTPException(status_code=400, detail=data)
+
+    # errors to handle
+        # mismatch between shard_name in request_body.shards and request_body.servers
+            
+    # initialize the consistent hashing ring for each shard
+    for shard in request_body.shards:
+        shard_id = shard['Shard_id']
+        shardRing[shard_id] = ConsistentHashing()
+
+    # spawn servers and add them to hashing ring of appropriate shards
+    try:
+        for server, shards in request_body.servers.items():
+            # spawn server container
+            res = spawn_container(server)
+            
+            if res == "success":
+                # add server to the consistent hashing ring
+                for shard in shards:
+                    shardRing[shard].add_server(server)
+                    print(f"Succesfully added server {server} to hash ring of shard {shard}")
+    
+    except Exception as e:
+        
+        # undo state changes, TBD
+
+        data = {
+            'message': f"<Error> An error occurred while spawning servers: {e}",
+            'status': "failure"
+        }
+        raise HTTPException(status_code=400, detail=data)
+    
+    reponse_data = {
+        'message': "Configured database",
+        'status': "success"
+    }
+    
+    return JSONResponse(content=reponse_data, status_code=200)
+
+
+@app.post('/add')
+async def add_servers(request_body: AddRequest):
+    # add the new shards
+    try:
+        for shard in request_body.new_shards:
+            record = ShardRecord(Stud_id_low=shard['Stud_id_low'], Shard_id=shard['Shard_id'], Shard_size=shard['Shard_size'], valid_idx=1)
+            database.insert_shard_record(record)
+            shardRing[shard['Shard_id']] = ConsistentHashing()
+
+        # add the new servers
+        new_server_names = request_body.keys()
+        for server_name in request_body.servers:
+            res = spawn_container(server_name)
+            if res == "success":
+                for shard in request_body.servers[server_name]:
+                    shardRing[shard].add_server(server_name)
+            else:
+                print(f"Unable to add server {server_name}")
+    except Exception as e:
+        data = {
+            'message': f"<Error> An error occurred while adding new servers: {e}",
+            'status': "failure"
+        }
+        raise HTTPException(status_code=400, detail=data)
+
+    # get total number of servers from MapT
+    unique_servers = database.get_unique_servers()
+    num_servers = len(unique_servers)
+
+    # message = 'Added Server:<name1>, Server:<name2>, ...'
+    message = 'Added Servers: ' + ', '.join(new_server_names)
+
+    repsonse_data = {
+        'N': num_servers,
+        'message': message,
+        'status': "success"
+    }
+
+    return JSONResponse(content=repsonse_data, status_code=200)
+
+
+@app.delete('/rm')
+async def remove_servers(request_body: RemoveRequest):
+    # remove the servers
+    try:
+        num_remove = request_body.n
+        server_names = request_body.servers
+
+        # get server list from MapT
+        unique_servers = database.get_unique_servers()
+        num_existing_servers = len(unique_servers)
+        
+        # create set of all servers
+        all_servers = set()
+        for server in unique_servers:
+            all_servers.add(server[0])     
+
+        if num_remove > num_existing_servers:
+            data = {
+                'message': f"<Error> Number of servers to remove is more than the existing servers",
+                'status': "failure"
+            }
+            raise HTTPException(status_code=400, detail=data)
+
+        if num_remove > len(server_names):
+            # select random servers to delete from the pool of existing servers
+            candidate_servers = list(all_servers - set(server_names))
+            server_names += random.sample(candidate_servers, num_remove - len(server_names))
+
+        for server_name in server_names:
+            # remove server from the consistent hashing ring
+            for shard in shardRing.keys():
+                shardRing[shard].remove_server(server_name)
+            
+            # remove server from the MapT table
+            database.delete_map_server(server_name)
+            
+            # remove server container
+            res = remove_container(server_name)
+            if res != "success":
+                print(f"Unable to remove server {server_name}")
+    
+    except Exception as e:
+        data = {
+            'message': f"<Error> An error occurred while removing servers: {e}",
+            'status': "failure"
+        }
+        raise HTTPException(status_code=400, detail=data)
+
+    # get total number of servers from MapT
+    unique_servers = database.get_unique_servers()
+    num_servers = len(unique_servers)
+
+    # message = 'Removed Server:<name1>, Server:<name2>, ...'
+    message = 'Removed Servers: ' + ', '.join(server_names)
+
+    repsonse_data = {
+        'N': num_servers,
+        'message': message,
+        'status': "success"
+    }
+
+    return JSONResponse(content=repsonse_data, status_code=200)
+
 
 # function for reading low to high student IDs from a shard
 async def read_from_shard(shard_id: str, low: int, high: int):
@@ -98,7 +267,6 @@ def rep():
         }
     }
     return JSONResponse(content=data, status_code=200)
-
 
 
 @app.post('/add')

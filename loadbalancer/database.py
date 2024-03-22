@@ -17,14 +17,14 @@ try:
     )
     # create the ShardT and MapT tables if they don't exist
     with conn.cursor() as cursor:
-        cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_Id_low INT, Shard_id VARCHAR(255), Shard_size INT, valid_idx INT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_id_low INT PRIMARY KEY, Shard_id VARCHAR(255), Shard_size INT, valid_idx INT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS MapT (Shard_id VARCHAR(255), Server_id VARCHAR(255))")
         conn.commit()
 except Error as e:
     print(f"Error connecting to load_balancer_database: {e}")
 
 class ShardRecord:
-    Stud_Id_low: int
+    Stud_id_low: int
     Shard_id: str
     Shard_size: int
     valid_idx: int
@@ -35,14 +35,20 @@ class MapRecord:
 
 def get_shards():
     with conn.cursor() as cursor:
-        # order by Stud_Id_low so that we can easily find the shard for a given student id
-        query = "SELECT * FROM ShardT ORDER BY Stud_Id_low"
+        # order by Stud_id_low so that we can easily find the shard for a given student id
+        query = "SELECT * FROM ShardT ORDER BY Stud_id_low"
+        cursor.execute(query)
+        return cursor.fetchall()
+    
+def get_unique_servers():
+    with conn.cursor() as cursor:
+        query = "SELECT DISTINCT Server_id FROM MapT"
         cursor.execute(query)
         return cursor.fetchall()
 
 def insert_shard_record(record: ShardRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO ShardT VALUES ({record.Stud_Id_low}, {record.Shard_id}, {record.Shard_size}, {record.valid_idx})"
+        query = f"INSERT INTO ShardT VALUES ({record.Stud_id_low}, {record.Shard_id}, {record.Shard_size}, {record.valid_idx})"
         cursor.execute(query)
         conn.commit()
 
