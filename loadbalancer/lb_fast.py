@@ -11,7 +11,7 @@ import asyncio
 import log
 import database
 from typing import List, Dict
-from request_models import InitRequest, AdminRequest, ReadRequest, WriteRequest, AddRequest, RemoveRequest
+from request_models import *
 from database import ShardRecord, MapRecord
 
 from consistent_hasher import ConsistentHashing
