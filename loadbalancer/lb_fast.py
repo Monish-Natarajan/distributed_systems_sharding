@@ -1,5 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, Response
 import uvicorn
 
 import httpx
@@ -8,7 +8,7 @@ import time
 import subprocess
 import string
 import asyncio
-import log
+from log import log
 import database
 from typing import List, Dict
 from request_models import *
@@ -37,18 +37,49 @@ shardDataMap: Dict[str, ShardData] = {} # maps shard_id to a tuple containing co
 # initializes the load balancer and spawns servers
 @app.post('/init')
 async def initalize_loadbalancer(request_body: InitRequest):
+    # errors to handle
+    # mismatch between shard_name in request_body.shards and request_body.servers
+    # Reject request if error found before spawning anything
+    shards_to_add = set()
+    for shard in request_body.shards:
+        if shard.Shard_id in shards_to_add:
+            data = {
+                'message': f"<Error> Duplicate shard id {shard.Shard_id} found in request",
+                'status': "failure"
+            }
+            return JSONResponse(
+                content=data,
+                status_code=400
+            )
+        shards_to_add.add(shard.Shard_id)
+    shards_referred = set()
+    for server, shards in request_body.servers.items():
+        shards_referred.update(shards)
+    # if the two sets are not equal, then there is a mismatch
+    if shards_to_add != shards_referred:
+        data = {
+            'message': f"<Error> Mismatch between shards in 'shards' and 'servers'",
+            'status': "failure"
+        }
+        return JSONResponse(
+            content=data,
+            status_code=400
+        )
+    
+    # if we have reached this point, we can safely assume that the request is valid
+    log("Initializing load balancer")
     # insert into ShardT
     try:
         for shard in request_body.shards:
-            record = ShardRecord(Stud_id_low=shard['Stud_id_low'], Shard_id=shard['Shard_id'], Shard_size=shard['Shard_size'], valid_idx=1)
+            record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
             database.insert_shard_record(record)
-
+        log("Successfully inserted records into ShardT")
         # insert into MapT
         for server, shards in request_body.servers.items():
             for shard in shards:
                 record = MapRecord(Shard_id=shard, Server_id=server)
                 database.insert_map_record(record)
-    
+        log("Successfully inserted records into MapT")
     except Exception as e:
 
         # undo state changes, TBD
@@ -59,12 +90,11 @@ async def initalize_loadbalancer(request_body: InitRequest):
         }
         raise HTTPException(status_code=400, detail=data)
 
-    # errors to handle
-        # mismatch between shard_name in request_body.shards and request_body.servers
+
             
     # initialize the consistent hashing ring for each shard
     for shard in request_body.shards:
-        shard_id = shard['Shard_id']
+        shard_id = shard.Shard_id
         shardDataMap[shard_id] = ShardData(shard_id)
 
     # spawn servers and add them to hashing ring of appropriate shards
@@ -74,10 +104,20 @@ async def initalize_loadbalancer(request_body: InitRequest):
             res = spawn_container(server)
             
             if res == "success":
+                async with httpx.AsyncClient() as client:
+                    request = {
+                        "schema": request_body.schema_,
+                        "shards": shards
+                    }
+                    response = (await client.post(f"http://{server}:8080/config", json=request)).json()
+                    if response['status'] != "success":
+                        raise Exception(f"config() failed for server {server} with status {response['status']}")
                 # add server to the consistent hashing ring
                 for shard in shards:
                     shardDataMap[shard].ch.add_server(server)
-                    print(f"Succesfully added server {server} to hash ring of shard {shard}")
+                    log(f"Succesfully added server {server} to hash ring of shard {shard}")
+            else:
+                raise Exception(f"Unable to spawn server container {server}")
     
     except Exception as e:
         
@@ -96,14 +136,18 @@ async def initalize_loadbalancer(request_body: InitRequest):
     
     return JSONResponse(content=reponse_data, status_code=200)
 
+@app.get('/status')
+async def status():
+    pass
+
 @app.post('/add')
 async def add_servers(request_body: AddRequest):
     # add the new shards
     try:
         for shard in request_body.new_shards:
-            record = ShardRecord(Stud_id_low=shard['Stud_id_low'], Shard_id=shard['Shard_id'], Shard_size=shard['Shard_size'], valid_idx=1)
+            record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
             database.insert_shard_record(record)
-            shardDataMap[shard['Shard_id']] = ShardData(shard['Shard_id'])
+            shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
 
         # add the new servers
         new_server_names = request_body.servers.keys()
@@ -289,7 +333,7 @@ async def write(request_body: WriteRequest):
         try:
             chRing = shardDataMap[shard_id].ch
             writeLock = shardDataMap[shard_id].writeLock
-            with writeLock:
+            async with writeLock:
                 # get all servers that have this shard
                 servers = chRing.get_servers()
 
@@ -303,7 +347,7 @@ async def write(request_body: WriteRequest):
                 serversWritten: List[str] = []
                 for idx, server in enumerate(servers):
                     try:
-                        with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient() as client:
                             response = (await client.post(f"http://{server}:8080/write", json=request)).json()
                             if response['status'] != "success":
                                 raise Exception(f"write() failed for shard {shard_id} with status {response['status']}")
@@ -312,7 +356,7 @@ async def write(request_body: WriteRequest):
                         log(f"Error while writing to server {server}: ", e)
                         log("Rolling back writes to other servers in the shard")
                         for server in serversWritten:
-                            with httpx.AsyncClient() as client:
+                            async with httpx.AsyncClient() as client:
                                 for record in records:
                                     request = {
                                         "shard": shard_id,
@@ -332,10 +376,10 @@ async def write(request_body: WriteRequest):
             for shard_id in shardsWritten:
                 writeLock = shardDataMap[shard_id].writeLock
                 chRing = shardDataMap[shard_id].ch
-                with writeLock:
+                async with writeLock:
                     servers = chRing.get_servers()
                     for server in servers:
-                        with httpx.AsyncClient() as client:
+                        async with httpx.AsyncClient() as client:
                             for record in shardWriteMap[shard_id]:
                                 request = {
                                     "shard": shard_id,
@@ -372,7 +416,7 @@ async def modify_record(request_body):
     # update every server that contains this shard
     chRing = shardDataMap[shard_id].ch
     writeLock = shardDataMap[shard_id].writeLock
-    with writeLock:
+    async with writeLock:
         servers = chRing.get_servers()
         if is_update:
             request = {
@@ -388,7 +432,7 @@ async def modify_record(request_body):
         serversUpdated: List[str] = []
         for server in servers:
             try:
-                with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient() as client:
                     if is_update:
                         response = (await client.put(f"http://{server}:8080/update", json=request)).json()
                     else:
@@ -400,7 +444,7 @@ async def modify_record(request_body):
                 log(f"Error while updating server {server}: ", e)
                 log("Rolling back updates to other servers in the shard")
                 for server in serversUpdated:
-                    with httpx.AsyncClient() as client:
+                    async with httpx.AsyncClient() as client:
                         if is_update:
                             request = {
                                 "shard": shard_id,
@@ -468,9 +512,9 @@ def test():
 
 
 # returns  "204 No Content" for favicon.ico
-@app.get('/favicon.ico')
+@app.get('/favicon.ico', status_code=204)
 def favicon():
-    return JSONResponse(status=204)
+    pass
 
 
 # forwarding requests to the nearest server
@@ -501,7 +545,7 @@ async def home(path: str, request: Request):
         # don't handle this failure multiple times, only once
         # Need to use mutex lock to ensure the ConsistentHashing ring
         # is not modified by anyone else
-        with chLock:
+        async with chLock:
             if nearest_server in ch.get_servers():
                 handle_failure(nearest_server)
 
@@ -516,6 +560,8 @@ async def home(path: str, request: Request):
 
 def spawn_container(hostname):
     server_image = 'server'
+    log(f"DEBUG -- Process run as user: {subprocess.run(['whoami'], capture_output=True, text=True).stdout}")
+    log(f"DEBUG -- Members of docker group: {subprocess.run(['getent', 'group', 'docker'], capture_output=True, text=True).stdout}")
     command = f'docker run --rm --name {hostname} --network mynet --network-alias {hostname} -e HOSTNAME={hostname} -d {server_image}'
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True)
@@ -602,7 +648,7 @@ def handle_failure(hostname):
 async def heartbeat_check():
     while True:
         log("Checking heartbeat")
-        with chLock:
+        async with chLock:
             server_list = ch.get_servers()
             for server_hostname in server_list:
                 is_alive = False
@@ -649,7 +695,7 @@ async def main():
     config = uvicorn.Config("lb_fast:app", host="0.0.0.0", port=5001)
     server = uvicorn.Server(config)
     #uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
-    loop.create_task(heartbeat_check)
+    loop.create_task(heartbeat_check())
     await server.serve()
 
 if __name__ == "__main__":

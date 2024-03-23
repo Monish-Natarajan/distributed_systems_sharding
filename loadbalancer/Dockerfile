@@ -1,5 +1,5 @@
 # Use latest Python runtime as base image
-FROM ubuntu:latest
+FROM mysql:8.0-debian
 
 # Set the working directory in the container to /app
 WORKDIR /app
@@ -12,7 +12,7 @@ RUN install -m 0755 -d /etc/apt/keyrings
 RUN curl -fsSL https://download.docker.com/linux/debian/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
 RUN chmod a+r /etc/apt/keyrings/docker.gpg
 RUN echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
   $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
   tee /etc/apt/sources.list.d/docker.list > /dev/null
 RUN apt-get update
@@ -21,8 +21,7 @@ RUN apt-get -y install docker-ce-cli
 # Install necessary packages
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get -y install python3-pip
-RUN apt-get -y install python3-fastapi python3-uvicorn python3-httpx
-RUN apt-get -y install python3-mysql.connector
+RUN pip install mysql-connector-python fastapi httpx uvicorn --break-system-packages
 #RUN pip install fastapi uvicorn
 #RUN pip install httpx
 EXPOSE 5001
@@ -42,9 +41,9 @@ WORKDIR /app/build
 RUN cmake -DCMAKE_BUILD_TYPE=Release ..
 RUN cmake --build .
 WORKDIR /app
+COPY deploy.sh /always-initdb.d/
+ENV MYSQL_ROOT_PASSWORD="testing"
+ENV MYSQL_DATABASE="load_balancer_database"
 
-# Launch a mysql server
-CMD ["docker", "run", "--name", "mysql_server", "-e", "MYSQL_ROOT_PASSWORD=testing", "-e", "MYSQL_DATABASE=load_balancer_database", "-e", "MYSQL_USER=ravanan", "-e", "MYSQL_PASSWORD=testing", "-p", "3306:3306", "-d", "mysql:latest"]
-# Run lb.py when the container launches
-CMD ["python", "lb_fast.py"]
-#CMD python -m cProfile -o profiling.txt lb.py && less profiling.txt
+ENTRYPOINT ["/app/custom-entry.sh"]
+CMD ["mysqld"]

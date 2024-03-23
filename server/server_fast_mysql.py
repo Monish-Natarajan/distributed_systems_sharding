@@ -6,7 +6,7 @@ from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 import mysql.connector
 from mysql.connector import Error
-import os
+from time import sleep
 import string
 import random
 
@@ -59,7 +59,7 @@ async def config(config_request: ConfigRequest):
     for shard in config_request.shards:
         table_creation_query = f"CREATE TABLE IF NOT EXISTS {shard} ("
 
-        for column, dtype in zip(config_request.schema["columns"], config_request.schema["dtypes"]):
+        for column, dtype in zip(config_request.schema_["columns"], config_request.schema_["dtypes"]):
             if dtype == "String":
                 sql_dtype = "VARCHAR(255)"
             elif dtype == "Number":
@@ -296,13 +296,13 @@ def initialize():
 
     cursor.close()
     db_connection.commit()
-
-
+sleep(10)
 db_connection = mysql.connector.connect(
-    host="localhost",
+    host="127.0.0.1",
     user="root", 
-    password="testing",  
-    database="distributed_systems"
+    password="testing",
+    database="distributed_systems",
+    auth_plugin='mysql_native_password'
 )
 
 if __name__ == "__main__":

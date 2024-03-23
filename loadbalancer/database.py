@@ -1,14 +1,16 @@
 import mysql.connector
 from mysql.connector import Error
 from typing import List
-import log
+from log import log
+from time import sleep
 
-USER = "ravanan"
+USER = "root"
 PASSWORD = "testing"
 HOST = "localhost"
 DB = "load_balancer_database"
 
 try:
+    sleep(10)
     conn = mysql.connector.connect(
         user=USER,
         password=PASSWORD,
@@ -24,14 +26,16 @@ except Error as e:
     print(f"Error connecting to load_balancer_database: {e}")
 
 class ShardRecord:
-    Stud_id_low: int
-    Shard_id: str
-    Shard_size: int
-    valid_idx: int
+    def __init__(self, Stud_id_low: int, Shard_id: str, Shard_size: int, valid_idx: int):
+        self.Stud_id_low = Stud_id_low
+        self.Shard_id = Shard_id
+        self.Shard_size = Shard_size
+        self.valid_idx = valid_idx
 
 class MapRecord:
-    Shard_id: str
-    Server_id: str
+    def __init__(self, Shard_id: str, Server_id: str):
+        self.Shard_id = Shard_id
+        self.Server_id = Server_id
 
 def get_shards():
     with conn.cursor() as cursor:
@@ -48,26 +52,27 @@ def get_unique_servers():
 
 def insert_shard_record(record: ShardRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO ShardT VALUES ({record.Stud_id_low}, {record.Shard_id}, {record.Shard_size}, {record.valid_idx})"
+        log(f"DEBUG -- VALUES({record.Stud_id_low}, {record.Shard_id}, {record.Shard_size}, {record.valid_idx})")
+        query = f"INSERT INTO ShardT VALUES ({record.Stud_id_low}, '{record.Shard_id}', {record.Shard_size}, {record.valid_idx})"
         cursor.execute(query)
         conn.commit()
 
 def insert_map_record(record: MapRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO MapT VALUES ({record.Shard_id}, {record.Server_id})"
+        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}')"
         cursor.execute(query)
         conn.commit()
 
 # if a server goes down, all the shards mapped to it should be removed from MapT
 def delete_map_server(server_id: str) -> None:
     with conn.cursor() as cursor:
-        query = f"DELETE FROM MapT WHERE Server_id = {server_id}"
+        query = f"DELETE FROM MapT WHERE Server_id = '{server_id}'"
         cursor.execute(query)
         conn.commit()
 
 # shard can be mapped to multiple servers, return list of servers for a shard
 def get_servers_for_shard(shard_id: str):
     with conn.cursor() as cursor:
-        query = f"SELECT Server_id FROM MapT WHERE Shard_id = {shard_id}"
+        query = f"SELECT Server_id FROM MapT WHERE Shard_id = '{shard_id}'"
         cursor.execute(query)
         return cursor.fetchall()

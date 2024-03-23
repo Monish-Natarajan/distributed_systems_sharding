@@ -2,16 +2,14 @@ version: '3'
 services:
   load_balancer_service:
     build: ./loadbalancer
-    image: load_balancer
     container_name: load_balancer
     ports:
       - "5001:5001"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      # - /app/lb_fast.py:/home/monish/ACADEMICS/Sem8/DistributedSystems/asgn2/asgn1/distributed_systems/loadbalancer/lb_fast.py
-    # define a network called mynet
     networks:
       - mynet
+    
 networks:
   mynet:
     external: true

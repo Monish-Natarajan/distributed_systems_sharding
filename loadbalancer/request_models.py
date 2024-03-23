@@ -38,7 +38,7 @@ class SchemaModel(BaseModel):
 
 class InitRequest(BaseModel):
     schema_: SchemaModel = Field(alias='schema')
-    shards: ShardSchemaModel # List[Dict[str, int]]
+    shards: List[ShardSchemaModel] # List[Dict[str, int]]
     servers: Dict[str, List[str]] # server_name is the key, value is list of shards
 
 
