@@ -139,9 +139,38 @@ async def initalize_loadbalancer(request_body: InitRequest):
     
     return JSONResponse(content=reponse_data, status_code=200)
 
+
 @app.get('/status')
 async def status():
-    pass
+
+    # get the schema
+    schema = {
+        "columns": ["Stud_id", "Stud_name", "Stud_marks"],
+        "dtypes": ["Number", "String", "String"]
+    }
+
+    # get the shard records
+    shard_records = database.get_shards() # shard_records is a list of tuples of the form (Stud_id_low, Shard_id, Shard_size, valid_idx)
+    shards = [{"Stud_id_low": record[0], "Shard_id": record[1], "Shard_size": record[2]} for record in shard_records]
+
+    server_name_tuples = database.get_unique_servers()
+    server_names = [server[0] for server in server_name_tuples]
+    
+    serverToShards = {}
+    for server_name in server_names:
+        shard_name_tuples = database.get_shard_for_server(server_name)
+        shard_names = [shard[0] for shard in shard_name_tuples]
+        serverToShards[server_name] = shard_names
+
+    response_data = {
+        "N": len(server_names),
+        "schema": schema,
+        "shards": shards,
+        "servers": serverToShards
+    }
+
+    return JSONResponse(content=response_data, status_code=200)
+
 
 @app.post('/add')
 async def add_servers(request_body: AddRequest):

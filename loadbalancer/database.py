@@ -90,3 +90,10 @@ def get_servers_for_shard(shard_id: str):
         query = f"SELECT Server_id FROM MapT WHERE Shard_id = '{shard_id}'"
         cursor.execute(query)
         return cursor.fetchall()
+
+# get the shard for a given server
+def get_shard_for_server(server_id: str):
+    with conn.cursor() as cursor:
+        query = f"SELECT Shard_id FROM MapT WHERE Server_id = '{server_id}'"
+        cursor.execute(query)
+        return cursor.fetchall()
