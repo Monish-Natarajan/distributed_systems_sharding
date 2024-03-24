@@ -10,13 +10,27 @@ HOST = "localhost"
 DB = "load_balancer_database"
 
 try:
-    sleep(10)
-    conn = mysql.connector.connect(
-        user=USER,
-        password=PASSWORD,
-        host=HOST,
-        database=DB
-    )
+    # busy loop with a sleep of 1 second until the DB server is up
+    retries = 5
+    while retries:
+        try:
+            conn = mysql.connector.connect(
+                user=USER,
+                password=PASSWORD,
+                host=HOST,
+                database=DB
+            )
+            log("load_balancer -- Connected to load_balancer_database")
+            break
+        except Error as e:
+            retries -= 1
+            log(f"load_balancer -- Error connecting to load_balancer_database: {e}")
+            log(f"load_balancer -- {retries} retries left")
+            if retries > 0:
+                sleep(1)
+            else:
+                log("load_balancer -- Exiting because of DB connection error")
+                exit(1)
     # create the ShardT and MapT tables if they don't exist
     with conn.cursor() as cursor:
         cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_id_low INT PRIMARY KEY, Shard_id VARCHAR(255), Shard_size INT, valid_idx INT)")

@@ -1,4 +1,5 @@
 from fastapi import FastAPI, Request, HTTPException
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import JSONResponse, RedirectResponse, Response
 import uvicorn
 
@@ -100,25 +101,27 @@ async def initalize_loadbalancer(request_body: InitRequest):
     # spawn servers and add them to hashing ring of appropriate shards
     try:
         for server, shards in request_body.servers.items():
-            # spawn server container
             res = spawn_container(server)
-            
-            if res == "success":
-                async with httpx.AsyncClient() as client:
-                    request = {
-                        "schema": request_body.schema_,
-                        "shards": shards
-                    }
-                    response = (await client.post(f"http://{server}:8080/config", json=request)).json()
-                    if response['status'] != "success":
-                        raise Exception(f"config() failed for server {server} with status {response['status']}")
-                # add server to the consistent hashing ring
-                for shard in shards:
-                    shardDataMap[shard].ch.add_server(server)
-                    log(f"Succesfully added server {server} to hash ring of shard {shard}")
-            else:
+            if res != "success":
                 raise Exception(f"Unable to spawn server container {server}")
-    
+        # wait for the servers to start
+        await asyncio.sleep(60)
+        log("Done with waiting for servers to start")
+        # config all the servers
+        for server, shards in request_body.servers.items():
+            async with httpx.AsyncClient() as client:
+                request = {
+                    "schema": request_body.schema_.model_dump(),
+                    "shards": shards
+                }
+                log(f"Trying to config server {server}")
+                response = (await client.post(f"http://{server}:8080/config", json=jsonable_encoder(request))).json()
+                if response['status'] != "success":
+                    raise Exception(f"config() failed for server {server} with status {response['status']}")
+            # add server to the consistent hashing ring
+            for shard in shards:
+                shardDataMap[shard].ch.add_server(server)
+                log(f"Succesfully added server {server} to hash ring of shard {shard}")
     except Exception as e:
         
         # undo state changes, TBD
@@ -265,7 +268,7 @@ async def read_from_shard(shard_id: str, low: int, high: int):
                     "high": high
                 }
             }
-            response = (await client.post(f"http://{nearest_server}:8080/read", json=request)).json()
+            response = (await client.post(f"http://{nearest_server}:8080/read", json=jsonable_encoder(request))).json()
             
             if response['status'] == "success":
                 return response['data']
@@ -297,7 +300,7 @@ async def read(request_body: ReadRequest):
         upperEnd = lowerEnd + int(shard[2]) - 1
         if low >= lowerEnd and low <= upperEnd:
             # read the relevant records from this shard
-            records += read_from_shard(shard[1], low, min(high, upperEnd))
+            records += await read_from_shard(shard[1], low, min(high, upperEnd))
             shards_queried.append(shard[1])
             low = upperEnd + 1
         if low > high:
@@ -307,6 +310,7 @@ async def read(request_body: ReadRequest):
         "data": records,
         "status": "success"
     }
+    return response
 
 
 @app.post('/write')
@@ -348,7 +352,7 @@ async def write(request_body: WriteRequest):
                 for idx, server in enumerate(servers):
                     try:
                         async with httpx.AsyncClient() as client:
-                            response = (await client.post(f"http://{server}:8080/write", json=request)).json()
+                            response = (await client.post(f"http://{server}:8080/write", json=jsonable_encoder(request))).json()
                             if response['status'] != "success":
                                 raise Exception(f"write() failed for shard {shard_id} with status {response['status']}")
                             serversWritten.append(server)
@@ -362,7 +366,7 @@ async def write(request_body: WriteRequest):
                                         "shard": shard_id,
                                         "Stud_id": record['Stud_id']
                                     }
-                                    response = (await client.post(f"http://{server}:8080/del", json=request)).json()
+                                    response = (await client.post(f"http://{server}:8080/del", json=jsonable_encoder(request))).json()
                                     if response['status'] != "success":
                                         log(f"Failed to rollback write to server {server}")
                                         log(f"It is what it is. Cannot guarantee consistency of writes anymore. Shutting down load balancer")
@@ -370,7 +374,7 @@ async def write(request_body: WriteRequest):
                         raise e
             # if we have reached this, it means all writes to this shard were successful
             shardsWritten.append(shard_id)
-        except e as Exception:
+        except Exception as e:
             log(f"Error while writing to shard {shard_id}: ", e)
             log("Rolling back writes to other shards")
             for shard_id in shardsWritten:
@@ -385,7 +389,7 @@ async def write(request_body: WriteRequest):
                                     "shard": shard_id,
                                     "Stud_id": record['Stud_id']
                                 }
-                                response = (await client.post(f"http://{server}:8080/del", json=request)).json()
+                                response = (await client.post(f"http://{server}:8080/del", json=jsonable_encoder(request))).json()
                                 if response['status'] != "success":
                                     log(f"Failed to rollback write to server {server}")
                                     log(f"It is what it is. Cannot guarantee consistency of writes anymore. Shutting down load balancer")
@@ -394,7 +398,7 @@ async def write(request_body: WriteRequest):
         shardsWritten.append(shard_id)
     return JSONResponse(
         content={
-            "message": f"Successfully performed {data.size()} writes",
+            "message": f"Successfully performed {len(data)} writes",
             "status": "success"
         },
         status_code=200
@@ -434,9 +438,9 @@ async def modify_record(request_body):
             try:
                 async with httpx.AsyncClient() as client:
                     if is_update:
-                        response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                        response = (await client.put(f"http://{server}:8080/update", json=jsonable_encoder(request))).json()
                     else:
-                        response = (await client.delete(f"http://{server}:8080/del", json=request)).json()
+                        response = (await client.delete(f"http://{server}:8080/del", json=jsonable_encoder(request))).json()
                     if response['status'] != "success":
                         raise Exception(f"update() failed for shard {shard_id} with status {response['status']}")
                     serversUpdated.append(server)
@@ -451,14 +455,14 @@ async def modify_record(request_body):
                                 "Stud_id": request_body.Stud_id,
                                 "data": oldRecord
                             }
-                            response = (await client.put(f"http://{server}:8080/update", json=request)).json()
+                            response = (await client.put(f"http://{server}:8080/update", json=jsonable_encoder(request))).json()
                         else:
                             request = {
                                 "shard": shard_id,
                                 "curr_idx": 0,
                                 "data": [oldRecord]
                             }
-                            response = (await client.post(f"http://{server}:8080/write", json=request)).json()
+                            response = (await client.post(f"http://{server}:8080/write", json=jsonable_encoder(request))).json()
                         if response['status'] != "success":
                             log(f"Failed to rollback update to server {server}")
                             log(f"It is what it is. Cannot guarantee consistency of updates anymore. Shutting down load balancer")
@@ -560,8 +564,6 @@ async def home(path: str, request: Request):
 
 def spawn_container(hostname):
     server_image = 'server'
-    log(f"DEBUG -- Process run as user: {subprocess.run(['whoami'], capture_output=True, text=True).stdout}")
-    log(f"DEBUG -- Members of docker group: {subprocess.run(['getent', 'group', 'docker'], capture_output=True, text=True).stdout}")
     command = f'docker run --rm --name {hostname} --network mynet --network-alias {hostname} -e HOSTNAME={hostname} -d {server_image}'
     try:
         result = subprocess.run(command, shell=True, capture_output=True, text=True)

@@ -44,6 +44,6 @@ WORKDIR /app
 COPY deploy.sh /always-initdb.d/
 ENV MYSQL_ROOT_PASSWORD="testing"
 ENV MYSQL_DATABASE="load_balancer_database"
-
+USER mysql
 ENTRYPOINT ["/app/custom-entry.sh"]
 CMD ["mysqld"]

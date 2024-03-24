@@ -19,7 +19,7 @@ async def home():
     data = {
         'response': {
             'message': 'Hello from server: ' + server_identifier,
-            'status': 'successful',
+            'status': 'success',
         }
     }
     return JSONResponse(content=data, status_code=200)
@@ -90,7 +90,7 @@ async def config(config_request: ConfigRequest):
     server_shards = ', '.join([f'{server_identifier}:{shard}' for shard in config_request.shards])
     endpoint_response = {
         "message": f"{server_shards} configured",
-        "status": "succes"
+        "status": "success"
     }
     return JSONResponse(content=endpoint_response, status_code=200)
 
