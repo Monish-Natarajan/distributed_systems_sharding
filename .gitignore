@@ -5,3 +5,4 @@ cmake-build-debug/
 # ignore .so and .o files
 *.so
 *.o
+.ccls-cache/

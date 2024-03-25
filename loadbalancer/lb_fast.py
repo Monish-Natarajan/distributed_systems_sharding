@@ -29,11 +29,18 @@ class ShardData:
         self.writeLock: asyncio.Lock = asyncio.Lock()
 
 app = FastAPI()
-chLock = asyncio.Lock()
-ch = ConsistentHashing()
 shardDataMap: Dict[str, ShardData] = {} # maps shard_id to a tuple containing consistent hashing object and mutex lock
-#logging.getLogger('werkzeug').disabled = True
+failureLocks: Dict[str, asyncio.Lock] = {} # maps server hostname to a lock to prevent multiple failures from being handled concurrently
+deadServers: List[str] = []
+adminLock = asyncio.Lock()
+schemaConfig = {}
 
+
+async def reapDeadServer(hostname):
+    await asyncio.sleep(60)
+    # by the time this sleep ends, hopefully all requests to this server have been redirected (i.e. "failed")
+    deadServers.remove(hostname)
+    log(f"Reaped dead server {hostname}")
 
 # initializes the load balancer and spawns servers
 @app.post('/init')
@@ -136,7 +143,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
         'message': "Configured database",
         'status': "success"
     }
-    
+    schemaConfig = request_body.schema_.model_dump()
     return JSONResponse(content=reponse_data, status_code=200)
 
 
@@ -158,8 +165,7 @@ async def status():
     
     serverToShards = {}
     for server_name in server_names:
-        shard_name_tuples = database.get_shard_for_server(server_name)
-        shard_names = [shard[0] for shard in shard_name_tuples]
+        shard_names = database.get_shards_for_server(server_name)
         serverToShards[server_name] = shard_names
 
     response_data = {
@@ -174,107 +180,100 @@ async def status():
 
 @app.post('/add')
 async def add_servers(request_body: AddRequest):
-    # add the new shards
-    try:
-        for shard in request_body.new_shards:
-            record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
-            database.insert_shard_record(record)
-            shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
+    async with adminLock:
+        # add the new shards
+        try:
+            for shard in request_body.new_shards:
+                record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
+                database.insert_shard_record(record)
+                shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
 
-        # add the new servers
-        new_server_names = request_body.servers.keys()
-        for server_name in new_server_names:
-            res = spawn_container(server_name)
-            if res == "success":
-                for shard in request_body.servers[server_name]:
-                    shardDataMap[shard].ch.add_server(server_name)
-            else:
-                print(f"Unable to add server {server_name}")
-    except Exception as e:
-        data = {
-            'message': f"<Error> An error occurred while adding new servers: {e}",
-            'status': "failure"
-        }
-        raise HTTPException(status_code=400, detail=data)
-
-    # get total number of servers from MapT
-    unique_servers = database.get_unique_servers()
-    num_servers = len(unique_servers)
-
-    # message = 'Added Server:<name1>, Server:<name2>, ...'
-    message = 'Added Servers: ' + ', '.join(new_server_names)
-
-    repsonse_data = {
-        'N': num_servers,
-        'message': message,
-        'status': "success"
-    }
-
-    return JSONResponse(content=repsonse_data, status_code=200)
-
-
-@app.delete('/rm')
-async def remove_servers(request_body: RemoveRequest):
-    # remove the servers
-    try:
-        num_remove = request_body.n
-        server_names = request_body.servers
-
-        # get server list from MapT
-        unique_servers = database.get_unique_servers()
-        num_existing_servers = len(unique_servers)
-        
-        # create set of all servers
-        all_servers = set()
-        for server in unique_servers:
-            all_servers.add(server[0])     
-
-        if num_remove > num_existing_servers:
+            # add the new servers
+            new_server_names = request_body.servers.keys()
+            for server_name in new_server_names:
+                res = spawn_container(server_name)
+                if res == "success":
+                    for shard in request_body.servers[server_name]:
+                        shardDataMap[shard].ch.add_server(server_name)
+                else:
+                    log(f"Unable to add server {server_name}")
+        except Exception as e:
             data = {
-                'message': f"<Error> Number of servers to remove is more than the existing servers",
+                'message': f"<Error> An error occurred while adding new servers: {e}",
                 'status': "failure"
             }
             raise HTTPException(status_code=400, detail=data)
 
-        if num_remove > len(server_names):
-            # select random servers to delete from the pool of existing servers
-            candidate_servers = list(all_servers - set(server_names))
-            server_names += random.sample(candidate_servers, num_remove - len(server_names))
+        # get total number of servers from MapT
+        unique_servers = database.get_unique_servers()
+        num_servers = len(unique_servers)
 
-        for server_name in server_names:
-            # remove server from the consistent hashing ring
-            for shard in shardDataMap.keys():
-                shardDataMap[shard].ch.remove_server(server_name)
-            
-            # remove server from the MapT table
-            database.delete_map_server(server_name)
-            
-            # remove server container
-            res = remove_container(server_name)
-            if res != "success":
-                print(f"Unable to remove server {server_name}")
-    
-    except Exception as e:
-        data = {
-            'message': f"<Error> An error occurred while removing servers: {e}",
-            'status': "failure"
+        # message = 'Added Server:<name1>, Server:<name2>, ...'
+        message = 'Added Servers: ' + ', '.join(new_server_names)
+
+        repsonse_data = {
+            'N': num_servers,
+            'message': message,
+            'status': "success"
         }
-        raise HTTPException(status_code=400, detail=data)
 
-    # get total number of servers from MapT
-    unique_servers = database.get_unique_servers()
-    num_servers = len(unique_servers)
+        return JSONResponse(content=repsonse_data, status_code=200)
 
-    # message = 'Removed Server:<name1>, Server:<name2>, ...'
-    message = 'Removed Servers: ' + ', '.join(server_names)
 
-    repsonse_data = {
-        'N': num_servers,
-        'message': message,
-        'status': "success"
-    }
+@app.delete('/rm')
+async def remove_servers(request_body: RemoveRequest):
+    async with adminLock:
+        # remove the servers
+        try:
+            num_remove = request_body.n
+            server_names = request_body.servers
 
-    return JSONResponse(content=repsonse_data, status_code=200)
+            # get server list from MapT
+            unique_servers = database.get_unique_servers()
+            num_existing_servers = len(unique_servers)
+            
+            # create set of all servers
+            all_servers = set()
+            for server in unique_servers:
+                all_servers.add(server[0])     
+
+            if num_remove > num_existing_servers:
+                data = {
+                    'message': f"<Error> Number of servers to remove is more than the existing servers",
+                    'status': "failure"
+                }
+                raise HTTPException(status_code=400, detail=data)
+
+            if num_remove > len(server_names):
+                # select random servers to delete from the pool of existing servers
+                candidate_servers = list(all_servers - set(server_names))
+                server_names += random.sample(candidate_servers, num_remove - len(server_names))
+
+            for server_name in server_names:
+                # remove server from the consistent hashing ring
+                delete_server(server_name)
+        
+        except Exception as e:
+            data = {
+                'message': f"<Error> An error occurred while removing servers: {e}",
+                'status': "failure"
+            }
+            raise HTTPException(status_code=400, detail=data)
+
+        # get total number of servers from MapT
+        unique_servers = database.get_unique_servers()
+        num_servers = len(unique_servers)
+
+        # message = 'Removed Server:<name1>, Server:<name2>, ...'
+        message = 'Removed Servers: ' + ', '.join(server_names)
+
+        repsonse_data = {
+            'N': num_servers,
+            'message': message,
+            'status': "success"
+        }
+
+        return JSONResponse(content=repsonse_data, status_code=200)
 
 
 # function for reading low to high student IDs from a shard
@@ -304,7 +303,10 @@ async def read_from_shard(shard_id: str, low: int, high: int):
             else:
                 raise Exception(f"read_from_shard() failed for shard {shard_id} with status {response['status']}")
     except Exception as e:
-        log("Error while reading from shard: ", e)
+        # couldn't connect to the nearest server, what do we do?
+        asyncio.create_task(handle_failure(nearest_server)) # handle the failure concurrently
+        # Let this request fail, return an error response
+        raise e
 
 
 def get_shard_id(student_id: int):
@@ -324,22 +326,32 @@ async def read(request_body: ReadRequest):
     all_shards = database.get_shards() # List[tuples] sorted in ascending order of Stud_id_low
     shards_queried = []
     records = []
-    for shard in all_shards:
-        lowerEnd = int(shard[0])
-        upperEnd = lowerEnd + int(shard[2]) - 1
-        if low >= lowerEnd and low <= upperEnd:
-            # read the relevant records from this shard
-            records += await read_from_shard(shard[1], low, min(high, upperEnd))
-            shards_queried.append(shard[1])
-            low = upperEnd + 1
-        if low > high:
-            break
-    response = {
-        "shards_queried": shards_queried,
-        "data": records,
-        "status": "success"
-    }
-    return response
+    try:
+        for shard in all_shards:
+            lowerEnd = int(shard[0])
+            upperEnd = lowerEnd + int(shard[2]) - 1
+            if low >= lowerEnd and low <= upperEnd:
+                # read the relevant records from this shard
+                records += await read_from_shard(shard[1], low, min(high, upperEnd))
+                shards_queried.append(shard[1])
+                low = upperEnd + 1
+            if low > high:
+                break
+        response = {
+            "shards_queried": shards_queried,
+            "data": records,
+            "status": "success"
+        }
+        return response
+    except Exception as e:
+        log(f"Error while reading from shard {shard[1]}: ", e)
+        return JSONResponse(
+            content={
+                "message": "Failed to read records, try again",
+                "status": "failure"
+            },
+            status_code=500 
+        )
 
 
 @app.post('/write')
@@ -520,6 +532,8 @@ async def update(request_body: UpdateRequest):
 async def delete(request_body: DeleteRequest):
     return await modify_record(request_body)
 
+
+# FIXME: Should be removed ig
 @app.get('/rep')
 def rep():
     # Get the list of servers from the consistent hashing object
@@ -591,6 +605,30 @@ async def home(path: str, request: Request):
     return  JSONResponse(content = response.content.decode('utf-8'), status_code = response.status_code)
 
 
+def delete_server(hostname, temporary=False):
+    # remove this server from the consistent hashing ring of all shards
+    for shard in shardDataMap.keys():
+        shardDataMap[shard].ch.remove_server(hostname)
+    if not temporary:
+        try:
+            # remove server from the MapT table
+            database.delete_map_server(hostname)
+        except Exception as e:
+            log(f"Fatal - Unable to remove server {hostname} from the MapT table: {e}")
+            exit(1)
+        # remove server container
+        res = remove_container(hostname)
+        if res != "success":
+            log(f"Unable to remove server container {hostname}")
+
+# inserts a server that already exists as a container back into the ring and tables
+def insert_server(hostname):
+    # get all the shards that this server is responsible for
+    shards = database.get_shards_for_server(hostname)
+    for shard in shards:
+        shardDataMap[shard].ch.add_server(hostname)
+
+
 def spawn_container(hostname):
     server_image = 'server'
     command = f'docker run --rm --name {hostname} --network mynet --network-alias {hostname} -e HOSTNAME={hostname} -d {server_image}'
@@ -624,64 +662,145 @@ def remove_container(node_name):
 
 
 # checks if any of the servers are down, is called when a server doesn't respond
-def handle_failure(hostname):
-    # if no hostname provided, error out
+async def handle_failure(hostname):
     if hostname is None:
         raise Exception("Fatal: No hostname provided to handle_failure()")
+    async with adminLock:
+        if hostname in deadServers:
+            # server didn't respond to our repeated requests and was respawned under
+            # a different name
+            # nothing to do here
+            return
+        # get the list of all servers
+        # remove hostname temporarily so that other requests can be distributed to other servers
+        delete_server(hostname, temporary=True)
+        timeout = httpx.Timeout(5.0, read=5.0)
 
-    # remove hostname temporarily so that other requests can be distributed to other servers
-    ch.remove_server(hostname)
-    timeout = httpx.Timeout(5.0, read=5.0)
-
-    is_alive = False
-    for _ in range(3):  # retry 3 times
-        try:
-            with httpx.Client(timeout=timeout) as client:
-                response = client.get(f"http://{hostname}:8080/heartbeat")
-            if response.status_code == 200:
-                is_alive = True
-                break  # server is alive
-        except Exception as e:
-            # ignore exceptions and try again
-            log(
-                f"handle_failure(): Exception raised while trying to check for liveliness of server {hostname}, "
-                f"trying again: {e}")
-
-    if is_alive:
-        # server is alive, add it back to the ring
-        ch.add_server(hostname)
-        return
-    else:
-        # server is dead, spawn a new server to replace it
-        log(f"handle_failure(): Server {hostname} is down!")
-
-        # spawn new server with a random hostname
-        new_hostname = generate_hostname(10)
-
-        # keep trying to generate a hostname that's not already in use
-        # why did I use ch.get_servers() here? Just in case an admin command is executed while this function is running
-        while new_hostname in ch.get_servers():
-            new_hostname = generate_hostname(10)
-
-        res = spawn_container(new_hostname)
-        time.sleep(1)
-
-        if res == "success":
+        is_alive = False
+        for _ in range(3):  # retry 3 times
             try:
-                ch.add_server(new_hostname)
-                log(f"Succesfully added server {new_hostname} to replace {hostname}")
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.get(f"http://{hostname}:8080/heartbeat")
+                if response.status_code == 200:
+                    is_alive = True
+                    break  # server is alive
             except Exception as e:
-                log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
-                ch.remove_server(new_hostname)
+                # ignore exceptions and try again
+                log(
+                    f"handle_failure(): Exception raised while trying to check for liveliness of server {hostname}, "
+                    f"trying again: {e}")
+
+        if is_alive:
+            # server is alive, add it back to the ring
+            insert_server(hostname)
+            return
         else:
-            log(f"Unable to add server {new_hostname}!")
+            # server is dead, spawn a new server to replace it
+            log(f"handle_failure(): Server {hostname} is down!")
+            # get the shards that this server once held
+            shards_to_copy = database.get_shards_for_server(hostname)
+            # need to remove it from the MapT table, it has already been removed the consistent hashing rings
+            try:
+                database.delete_map_server(hostname)
+            except Exception as e:
+                log(f"Fatal - Unable to remove server {hostname} from the MapT table: {e}")
+                exit(1)
+            # spawn new server with a random hostname
+            new_hostname = generate_hostname(10)
+            current_server_names = database.get_unique_servers()
+            # keep trying to generate a hostname that's not already in use
+            while new_hostname in deadServers or new_hostname in current_server_names:
+                new_hostname = generate_hostname(10)
+
+            res = spawn_container(new_hostname)
+            # need to sleep for sometime until server has been spawned
+            await asyncio.sleep(60)
+            if res == "success":
+                try:                    
+                    # * copy the old shards from servers that contain them
+                    # * each server has an endpoint called /copy that gives us the
+                    #   shard we want in its entirety
+                    # * shards_to_copy is a list of shard_ids that we hope to copy from the remaining
+                    #   replicas, retrievedShards is a dict of shards that we could actually recover mapping
+                    #   to their contents
+                    retrievedShards: Dict[str, List[StudentModel]] = []
+                    for shard in shards_to_copy:
+                        # choose a server that contains this shard
+                        chRing = shardDataMap[shard].ch
+                        servers_with_shard = chRing.get_servers()
+                        # try to copy from every server possible until one of them
+                        # responds
+                        request = {
+                            "shards": [shard]
+                        }
+                        for server in servers_with_shard:
+                            try:
+                                async with httpx.AsyncClient() as client:
+                                    response = (await client.post(f"http://{server}:8080/copy", json=request)).json()
+                                    if response['status'] == "success":
+                                        retrievedShards[shard] = response[shard]
+                                        break
+                                    else:
+                                        raise Exception(f"status={response['status']}")  # try the next server after exception handling                                    
+                            except Exception as e:
+                                log(f"handle_failure(): Exception raised while trying to copy shard {shard} from server {server}: {e}")
+                    # * place the shard data in the new server
+                    # * we need to config the server through the /config endpoint
+                    try:
+                        async with httpx.AsyncClient() as client:
+                            request = {
+                                "schema": schemaConfig,
+                                "shards": retrievedShards.keys()
+                            }
+                            response = (await client.post(f"http://{new_hostname}:8080/config", json=jsonable_encoder(request))).json()
+                            if response['status'] != "success":
+                                raise Exception(f"config() failed for server {new_hostname} with status {response['status']}")
+                    except Exception as e:
+                        log(f"handle_failure(): Exception raised while trying to config server {new_hostname}: {e}")
+                        log(f"Replicas have been lost")
+                        return
+                    # config is done, need to copy the data we retrieved to the new server
+                    successfullyCopiedShards: List[str] = []
+                    for shard in retrievedShards:
+                        # try to write this shard to the new server
+                        try:
+                            async with httpx.AsyncClient() as client:
+                                request = {
+                                    "shard": shard,
+                                    "curr_idx": 0,
+                                    "data": retrievedShards[shard]
+                                }
+                                response = (await client.post(f"http://{new_hostname}:8080/write", json=jsonable_encoder(request))).json()
+                                if response['status'] != "success":
+                                    raise Exception(f"write() failed for shard {shard} with status {response['status']}")
+                            successfullyCopiedShards.append(shard)
+                        except Exception as e:
+                            log(f"handle_failure(): Exception raised while trying to write shard {shard} to server {new_hostname}: {e}")
+                            log(f"Lost a replica")
+                            continue # copying this shard failed, lost a replica, can't do much, move on to the next shard
+                    # add it to the MapT table with the corresponding old shards
+                    for shard in successfullyCopiedShards:
+                        record = MapRecord(Shard_id=shard, Server_id=new_hostname)
+                        database.insert_map_record(record)
+                        # need to add the new server to the consistent hashing ring for all the shards it has a replica of
+                        shardDataMap[shard].ch.add_server(new_hostname)
+                    log(f"Succesfully added server {new_hostname} to replace {hostname}")
+                    deadServers.append(hostname) # prevent further failure handling for the old server that's no more
+                    asyncio.create_task(await reapDeadServer(hostname))
+                except Exception as e:
+                    log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
+                    # can't do much, let's just continue
+            else:
+                log(f"Unable to add server {new_hostname}!")
 
 async def heartbeat_check():
+    # clean up the failureLocks dictionary
+    # get servers in use
     while True:
-        log("Checking heartbeat")
-        async with chLock:
-            server_list = ch.get_servers()
-            for server_hostname in server_list:
+        async with adminLock:
+            servers_in_use = database.get_unique_servers()
+            log("Checking heartbeat")
+            for server_hostname in servers_in_use:
                 is_alive = False
                 for _ in range(3):
                     try:
@@ -692,33 +811,13 @@ async def heartbeat_check():
                             break
                     except Exception as e:
                         log(f"heartbeat_check(): Exception raised wheile trying to check for liveliness of server {server_hostname}, "
-                              f"trying again: {e}")
+                                f"trying again: {e}")
                 if is_alive:
                     log(f"{server_hostname} is alive -- passed heartbeat check")
                 else:
                     # server is dead, spawn a new server to replace it
-                    log(f"handle_failure(): Server {server_hostname} is down!")
-
-                    # spawn new server with a random hostname
-                    new_hostname = generate_hostname(10)
-
-                    # keep trying to generate a hostname that's not already in use
-                    while new_hostname in ch.get_servers() or new_hostname in server_list:
-                        new_hostname = generate_hostname(10)
-
-                    res = spawn_container(new_hostname)
-                    time.sleep(1)
-
-                    if res == "success":
-                        try:
-                            ch.add_server(new_hostname)
-                            log(f"Succesfully added server {new_hostname} to replace {server_hostname}")
-                        except Exception as e:
-                            log(f"An error occurred while adding server {new_hostname} to replace {server_hostname}: {e}")
-                            ch.remove_server(new_hostname)
-                    else:
-                        log(f"Unable to add server {new_hostname} as a replacement for {server_hostname}!")
-        await asyncio.sleep(5 * 60) # sleep for 5 minutes and then perform a check
+                    await handle_failure(server_hostname)
+        await asyncio.sleep(20 * 60) # sleep for 20 minutes and then perform a check
         
 
 async def main():

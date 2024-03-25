@@ -33,7 +33,7 @@ try:
                 exit(1)
     # create the ShardT and MapT tables if they don't exist
     with conn.cursor() as cursor:
-        cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_id_low INT PRIMARY KEY, Shard_id VARCHAR(255), Shard_size INT, valid_idx INT)")
+        cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_id_low INT, Shard_id VARCHAR(255) PRIMARY KEY, Shard_size INT, valid_idx INT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS MapT (Shard_id VARCHAR(255), Server_id VARCHAR(255))")
         conn.commit()
 except Error as e:
@@ -62,7 +62,7 @@ def get_unique_servers():
     with conn.cursor() as cursor:
         query = "SELECT DISTINCT Server_id FROM MapT"
         cursor.execute(query)
-        return cursor.fetchall()
+        return [x[0] for x in cursor.fetchall()]
 
 def insert_shard_record(record: ShardRecord) -> None:
     with conn.cursor() as cursor:
@@ -89,11 +89,13 @@ def get_servers_for_shard(shard_id: str):
     with conn.cursor() as cursor:
         query = f"SELECT Server_id FROM MapT WHERE Shard_id = '{shard_id}'"
         cursor.execute(query)
-        return cursor.fetchall()
+        return [x[0] for x in cursor.fetchall()]
 
-# get the shard for a given server
-def get_shard_for_server(server_id: str):
+# get shards that a particular server services
+def get_shards_for_server(server_id: str):
     with conn.cursor() as cursor:
         query = f"SELECT Shard_id FROM MapT WHERE Server_id = '{server_id}'"
         cursor.execute(query)
-        return cursor.fetchall()
+        # result would be a list of tuples, return a list of the first and only element
+        # of each tuple
+        return [x[0] for x in cursor.fetchall()]
