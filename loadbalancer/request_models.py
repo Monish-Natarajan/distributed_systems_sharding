@@ -55,11 +55,11 @@ class WriteRequest(BaseModel):
     data: List[StudentModel]
 
 class UpdateRequest(BaseModel):
-    Stud_id: str
+    Stud_id: int
     data: StudentModel
 
 class DeleteRequest(BaseModel):
-    Stud_id: str
+    Stud_id: int
 
 class AddRequest(BaseModel):
     n: int

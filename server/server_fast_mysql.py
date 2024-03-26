@@ -113,7 +113,7 @@ async def autopopulate():
 class CopyRequest(BaseModel):
     shards: List[str]
 
-@app.get('/copy')
+@app.post('/copy')
 async def get_all_entries(copy_request: CopyRequest):
     cursor = db_connection.cursor()
     copy_response = {}
@@ -256,7 +256,7 @@ class DeleteRequest(BaseModel):
     shard: str
     Stud_id: int
 
-@app.delete('/del')
+@app.post('/del')
 async def delete_entry(delete_request: DeleteRequest):
     cursor = db_connection.cursor()
     delete_response = {}

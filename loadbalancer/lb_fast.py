@@ -143,6 +143,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
         'message': "Configured database",
         'status': "success"
     }
+    global schemaConfig
     schemaConfig = request_body.schema_.model_dump()
     return JSONResponse(content=reponse_data, status_code=200)
 
@@ -150,7 +151,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
 @app.get('/status')
 async def status():
 
-    # get the schema
+    # get the schema (static)
     schema = {
         "columns": ["Stud_id", "Stud_name", "Stud_marks"],
         "dtypes": ["Number", "String", "String"]
@@ -304,7 +305,7 @@ async def read_from_shard(shard_id: str, low: int, high: int):
                 raise Exception(f"read_from_shard() failed for shard {shard_id} with status {response['status']}")
     except Exception as e:
         # couldn't connect to the nearest server, what do we do?
-        asyncio.create_task(handle_failure(nearest_server)) # handle the failure concurrently
+        await handle_failure(nearest_server)
         # Let this request fail, return an error response
         raise e
 
@@ -457,7 +458,16 @@ async def modify_record(request_body):
             status_code=404
         )
     # get the current record for this student id
-    oldRecord = (await read_from_shard(shard_id, request_body.Stud_id, request_body.Stud_id))[0]
+    oldRecord = (await read_from_shard(shard_id, request_body.Stud_id, request_body.Stud_id))
+    if len(oldRecord) == 0:
+        return JSONResponse(
+            content={
+                "message": "Student ID not found",
+                "status": "failure"
+            },
+            status_code=404
+        )
+    oldRecord = oldRecord[0]
     # update every server that contains this shard
     chRing = shardDataMap[shard_id].ch
     writeLock = shardDataMap[shard_id].writeLock
@@ -481,7 +491,7 @@ async def modify_record(request_body):
                     if is_update:
                         response = (await client.put(f"http://{server}:8080/update", json=jsonable_encoder(request))).json()
                     else:
-                        response = (await client.delete(f"http://{server}:8080/del", json=jsonable_encoder(request))).json()
+                        response = (await client.post(f"http://{server}:8080/del", json=jsonable_encoder(request))).json()
                     if response['status'] != "success":
                         raise Exception(f"update() failed for shard {shard_id} with status {response['status']}")
                     serversUpdated.append(server)
@@ -663,9 +673,11 @@ def remove_container(node_name):
 
 # checks if any of the servers are down, is called when a server doesn't respond
 async def handle_failure(hostname):
+    log(f"Handling failure for server {hostname}")
     if hostname is None:
         raise Exception("Fatal: No hostname provided to handle_failure()")
     async with adminLock:
+        log(f"Acquired lock to handle failure for server {hostname}")
         if hostname in deadServers:
             # server didn't respond to our repeated requests and was respawned under
             # a different name
@@ -723,7 +735,7 @@ async def handle_failure(hostname):
                     # * shards_to_copy is a list of shard_ids that we hope to copy from the remaining
                     #   replicas, retrievedShards is a dict of shards that we could actually recover mapping
                     #   to their contents
-                    retrievedShards: Dict[str, List[StudentModel]] = []
+                    retrievedShards: Dict[str, List[StudentModel]] = {}
                     for shard in shards_to_copy:
                         # choose a server that contains this shard
                         chRing = shardDataMap[shard].ch
@@ -736,7 +748,7 @@ async def handle_failure(hostname):
                         for server in servers_with_shard:
                             try:
                                 async with httpx.AsyncClient() as client:
-                                    response = (await client.post(f"http://{server}:8080/copy", json=request)).json()
+                                    response = (await client.post(f"http://{server}:8080/copy", json=jsonable_encoder(request))).json()
                                     if response['status'] == "success":
                                         retrievedShards[shard] = response[shard]
                                         break
@@ -750,10 +762,13 @@ async def handle_failure(hostname):
                         async with httpx.AsyncClient() as client:
                             request = {
                                 "schema": schemaConfig,
-                                "shards": retrievedShards.keys()
+                                "shards": list(retrievedShards.keys())
                             }
                             response = (await client.post(f"http://{new_hostname}:8080/config", json=jsonable_encoder(request))).json()
+                            log(f"DEBUG -- {response}")
+                            log(f"DEBUG -- status={response['status']}")
                             if response['status'] != "success":
+                                log(f"DEBUG -- I am here")
                                 raise Exception(f"config() failed for server {new_hostname} with status {response['status']}")
                     except Exception as e:
                         log(f"handle_failure(): Exception raised while trying to config server {new_hostname}: {e}")
@@ -786,7 +801,7 @@ async def handle_failure(hostname):
                         shardDataMap[shard].ch.add_server(new_hostname)
                     log(f"Succesfully added server {new_hostname} to replace {hostname}")
                     deadServers.append(hostname) # prevent further failure handling for the old server that's no more
-                    asyncio.create_task(await reapDeadServer(hostname))
+                    asyncio.get_event_loop().create_task(reapDeadServer(hostname))
                 except Exception as e:
                     log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
                     # can't do much, let's just continue
