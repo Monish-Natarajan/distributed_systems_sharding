@@ -7,7 +7,7 @@ setup:
 
 run:
 	@docker compose build
-	DOCKER_GID=$(DOCKER_GID) docker compose up
+	DOCKER_GID=$(DOCKER_GID) docker compose up -d
 stop:
 	-@docker compose down --rmi local
 	-@docker ps -a -q --filter ancestor=server | xargs -r docker rm --force

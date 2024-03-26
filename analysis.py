@@ -1,167 +1,120 @@
-import aiohttp
-import asyncio
-import matplotlib.pyplot as plt
-import json
 import os
-import ast
-import tqdm
+import httpx
+import time
+import matplotlib.pyplot as plt
+from tqdm import tqdm
 import tqdm.asyncio
+import asyncio
+performance = {"Write": {}, "Read": {}}
+numOfRW = 10000
 
-PORT_NO = 5001
-
-
-async def make_request(session, url):
-    async with session.get(url) as response:
-        return await response.text()
-
-
-async def launch_requests():
-    async with aiohttp.ClientSession() as session:
-        tasks = [make_request(session, f'http://localhost:{PORT_NO}/home') for _ in range(10000)]
-        results = []
-
-        # with tqdm.tqdm(total=len(tasks)) as pbar:
-        #     for f in asyncio.as_completed(tasks):
-        #         result = await f
-        #         results.append(result)
-        #         pbar.update(1)
-        print("Sending requests")
-        for f in tqdm.asyncio.tqdm.as_completed(tasks):
-            results.append(await f)
-
-        # results = await asyncio.gather(*tasks)
-        return results
-
-
-async def count_responses(results):
-    # get current list of servers
-    url = f'http://localhost:{PORT_NO}/rep'
-    counts = {}
-    # make a GET request that will return the current list of servers
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            result = json.loads(await response.text())
-            for i in ast.literal_eval(result['response']['message']['replicas']):
-                counts[i] = 0
-    for response in results:
-        # response is a json string
-        # convert it into a dict
-        response_dict = json.loads(response)
-        message = response_dict['response']['message']
-        # message is of the format: Hello from server number: {server_identifier}
-        # extract the server identifier
-        server_identifier = message.split(':')[-1].strip()
-        counts[server_identifier] = counts.get(server_identifier, 0) + 1
-    # Sort the counts based on keys (server identifiers)
-    sorted_counts = dict(sorted(counts.items()))
-
-    return sorted_counts
-
-
-def plot_barchart(counts, filename):
-    labels = list(counts.keys())
-    values = list(counts.values())
-
+def printGraph():
+    global performance
+    print(performance)
+    # print the graph
     fig, ax = plt.subplots()
-
-    # Your bar plot code here
-    ax.bar(labels, values)
-
-    # Set labels and title
-    ax.set_xlabel('Server Instances')
-    ax.set_ylabel('Request Count')
-    ax.set_title('Request Count Handled by Each Server Instance (Load Balancer)')
-    plt.xticks(rotation='vertical')
-    plt.tight_layout()
-    # Ensure the 'output' directory exists
-    if not os.path.exists('output'):
-        os.makedirs('output')
-
-    # Save the figure to the specified output filename
-    plt.savefig(f'output/{filename}.png')
-
-
-async def instantiate_server():
-    url = f'http://localhost:{PORT_NO}/add'
-    # make a POST request to the add endpoint
-    async with aiohttp.ClientSession() as session:
-        await session.post(url, json={'n': 1, 'hostnames': []})
-
-
-async def delete_server():
-    url = f'http://localhost:{PORT_NO}/rm'
-    # make a POST request to the add endpoint
-    async with aiohttp.ClientSession() as session:
-        await session.post(url, json={'n': 1, 'hostnames': []})
-
-
-async def list_servers():
-    url = f'http://localhost:{PORT_NO}/rep'
-    # make a GET request that will return the current list of servers
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as response:
-            result = json.loads(await response.text())
-            print(result['response']['message']['replicas'])
-
-
-async def common(n, filename):
-    print("Instantiating servers")
-    for i in tqdm.tqdm(range(n)):
-        await instantiate_server()
-    print("Finished instantiating servers")
-    results = await launch_requests()
-    print("Finished sending requests")
-    counts = await count_responses(results)
-    # print a tabulated version of counts
-    print("{:<20} {:<10}".format('Label', 'Number'))
-    for k, v in counts.items():
-        print("{:<20} {:<10}".format(k, v))
-
-    plot_barchart(counts, filename)
-    for i in range(n):
-        await delete_server()
-
-
-SEPARATOR = "----------------------------------------"
-
-
-async def a1():
-    print(SEPARATOR)
-    print("| Running a1 |")
-    print(SEPARATOR)
-    await common(3, "a1_n_3")
-
-
-async def a2():
-    print(SEPARATOR)
-    print("| Running a2 |")
-    print(SEPARATOR)
-    for n in range(2, 7):
-        print(f"Running for n = {n}")
-        await common(n, "a2_n_{}".format(n))
-
-    # plot a line plot of 10000/N for N = 2 to 6
+    ax.bar(performance["Write"].keys(), performance["Write"].values())
+    ax.set_ylabel('Time (in seconds)')
+    ax.set_xlabel('Configurations')
+    ax.set_title('Write Performance')
+    # plt.xticks(rotation=90)
+    plt.show()
     fig, ax = plt.subplots()
-    y = [10000 / i for i in range(2, 7)]
-    x = [i for i in range(2, 7)]
-    ax.plot(x, y)
-    plt.tight_layout()
-    ax.set_xlabel('Number of Servers')
-    ax.set_ylabel('Number of Requests per Server')
-    plt.savefig(f'output/a2_line_plot.png')
+    ax.bar(performance["Read"].keys(), performance["Read"].values())
+    ax.set_ylabel('Time (in seconds)')
+    ax.set_xlabel('Configurations')
+    ax.set_title('Read Performance')
+    # plt.xticks(rotation=90)
+    plt.show()
+
+
+async def send_write_request(i):
+    payload = {
+        "data": [{"Stud_id":i, "Stud_name":f"Student{i}", "Stud_marks": i%100}]
+    }
+    async with httpx.AsyncClient() as client:
+        response = await client.post("http://localhost:5001/write", json=payload, timeout=1000)
+        if response.status_code != 200:
+            print("Error in writing")
+            print(response.text)
+            exit(0)
+        return response.elapsed.microseconds
+async def send_read_request(i):
+    payload = {"Stud_id": {"low":i, "high":i+1}}
+    async with httpx.AsyncClient() as client:
+        response = await client.post(f"http://localhost:5001/read", json=payload, timeout=1000)
+        if response.status_code != 200:
+            print("Error in reading")
+            print(response.text)
+            exit(0)
+        return
+async def analysis(numOfShards, numOfServers, numOfReplicas):
+    global performance, numOfRW
+    # start the system in the background
+    os.system("make clean")
+    os.system("make setup")
+    os.system("make run")
+    # init the system
+    shards = []
+    for i in range(numOfShards):
+        shards.append({"Stud_id_low": i*4096, "Shard_id": f"sh{i}", "Shard_size": 4096})
+    servers = {}
+    for i in range(numOfServers):
+        servers[f"Server{i}"] = []
+    j = 0
+    for i in range(numOfShards):
+        for k in range(numOfReplicas):
+            servers[f"Server{j}"].append(f"sh{i}")
+            j = (j+1) % numOfServers
+    payload = {
+        "N":3, 
+        "schema": {
+            "columns":["Stud_id","Stud_name","Stud_marks"], 
+            "dtypes":["Number","String","String"]
+            }, 
+        "shards":[{"Stud_id_low":0, "Shard_id": "sh1", "Shard_size":4096}, {"Stud_id_low":4096, "Shard_id": "sh2", "Shard_size":4096}, {"Stud_id_low":8192, "Shard_id": "sh3", "Shard_size":4096}], 
+        "servers":{"Server0":["sh1","sh2"], "Server1":["sh2","sh3"], "Server2":["sh1","sh3"]}
+    }
+    time.sleep(60)
+    response = httpx.Client().post("http://localhost:5001/init", json=payload, timeout=1000)
+    if response.status_code != 200:
+        print("Error in init")
+        print(response.text)
+        exit(0)
+    # perform writes
+    readTime = 0
+    writeTime = 0
+    print("Performing writes")
+    # launch numOfRW requests asynchronusly at the same time
+    write_tasks = [send_write_request(i) for i in range(0, numOfRW)]
+    print("Sending requests")
+    start_write_time = time.time()
+    for f in tqdm.asyncio.tqdm.as_completed(write_tasks):
+        await f
+    end_write_time = time.time()
+    writeTime = end_write_time - start_write_time
+            
+    print("Performing reads")
+    read_tasks = [send_read_request(i) for i in range(numOfRW)]
+    start_read_time = time.time()
+    for f in tqdm.asyncio.tqdm.as_completed(read_tasks):
+        await f
+    end_read_time = time.time()
+    readTime = end_read_time - start_read_time
+    performance["Write"][f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"] = writeTime
+    performance["Read"][f"{numOfShards} Shards, {numOfServers} Servers, {numOfReplicas} Replicas"] = (readTime)
+
+    # stop the system
+    os.system("make stop")
+    os.system("make clean")
 
 
 async def main():
-    user_input = input("Enter a1 or a2 (or 'done' to exit): ")
-    while user_input != 'done':
-        if user_input == 'a1':
-            await a1()
-        elif user_input == 'a2':
-            await a2()
-        else:
-            print("Invalid input")
-        user_input = input("Enter a1 or a2 (or 'done' to exit): ")
+    await analysis(4, 6, 3)
+    await analysis(4, 6, 6)
+    await analysis(6, 10, 8)
+    printGraph()
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     asyncio.run(main())
