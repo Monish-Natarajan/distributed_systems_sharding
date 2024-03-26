@@ -1,10 +1,21 @@
 # Report
 
-### Files and Folders
-`analysis.py` - performs the required analysis for subtasks a1 and a2
+## Files and Folders
+`analysis.py` - performs the required analysis for subtasks
 `loadbalancer/` - contains all the code for the loadbalancer
 `server/` - contains all the code for the server
 `output/` - contains the output graphs for the analysis
+
+## How to run?
+```bash
+python3 -m venv venv
+source venv/bin/activate    # to activate the Python virtual env
+
+make clean                  # to ensure we are starting afresh
+make setup                  # to install the dependencies
+make run                    # run the load balancer
+make clean                  # to wrap things up
+```
 
 # Performance
 
@@ -81,7 +92,7 @@ This module implements functionality for a distributed system utilizing FastAPI 
 - `database`: Module for interacting with the database.
 - `typing`: Typing module for type hints.
 
-### Functions and Classes
+### Functions and Endpoints
 
 #### `generate_hostname(n)`
 

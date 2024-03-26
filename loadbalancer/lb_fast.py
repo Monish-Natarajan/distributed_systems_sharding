@@ -161,8 +161,7 @@ async def status():
     shard_records = database.get_shards() # shard_records is a list of tuples of the form (Stud_id_low, Shard_id, Shard_size, valid_idx)
     shards = [{"Stud_id_low": record[0], "Shard_id": record[1], "Shard_size": record[2]} for record in shard_records]
 
-    server_name_tuples = database.get_unique_servers()
-    server_names = [server[0] for server in server_name_tuples]
+    server_names = database.get_unique_servers()
     
     serverToShards = {}
     for server_name in server_names:
@@ -181,23 +180,86 @@ async def status():
 
 @app.post('/add')
 async def add_servers(request_body: AddRequest):
+    if request_body.n > len(request_body.servers):
+        # return error response saying n is invalid for the number of servers provided
+        return JSONResponse(
+            content={
+                "message": "Number of servers to add is more than the servers provided",
+                "status": "failure"
+            },
+            status_code=400
+        )
     async with adminLock:
-        # add the new shards
         try:
+            # spawn the servers first
+            new_server_names = request_body.servers.keys()
+            for ind, server_name in enumerate(new_server_names):
+                res = spawn_container(server_name)
+                if res != "success":
+                    # rolling back container spawning
+                    for i in range(0, ind):
+                        remove_container(new_server_names[i])
+                    return JSONResponse(
+                        content={
+                            "message": f"Failed to spawn server {server_name}",
+                            "status": "failure"
+                        },
+                        status_code=400
+                    )
             for shard in request_body.new_shards:
                 record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
                 database.insert_shard_record(record)
                 shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
+            await asyncio.sleep(60) # wait for the servers to finish spawning
 
-            # add the new servers
-            new_server_names = request_body.servers.keys()
+            # config the new servers just like what we did in handle_failure when we spawned a new server
+            # or like what we did in /init
+            global schemaConfig
             for server_name in new_server_names:
-                res = spawn_container(server_name)
-                if res == "success":
-                    for shard in request_body.servers[server_name]:
+                async with httpx.AsyncClient() as client:
+                    request = {
+                        "schema": schemaConfig,
+                        "shards": request_body.servers[server_name]
+                    }
+                    response = (await client.post(f"http://{server_name}:8080/config", json=jsonable_encoder(request))).json()
+                    if response['status'] != "success":
+                        raise Exception(f"config() failed for server {server_name} with status {response['status']}")
+            # copy the old shards to the newly spawned servers as needed
+            for server_name in new_server_names:
+                for shard in request_body.servers[server_name]:
+                    if shard in request_body.new_shards:
+                        continue # no need to copy anything
+                    # choose a server that contains this shard
+                    async with shardDataMap[shard].writeLock:
+                        for server in shardDataMap[shard].ch.get_servers():
+                            # copy data from this server
+                            try:
+                                async with httpx.AsyncClient() as client:
+                                    response = (await client.post(f"http://{server}:8080/copy", json=jsonable_encoder({"shards": [shard]}))).json()
+                                    if response['status'] == "success":
+                                        # write this shard to the new server
+                                        request = {
+                                            "shard": shard,
+                                            "curr_idx": 0,
+                                            "data": response[shard]
+                                        }
+                                        response = (await client.post(f"http://{server_name}:8080/write", json=jsonable_encoder(request))).json()
+                                        if response['status'] != "success":
+                                            raise Exception(f"write() failed for shard {shard} with status {response['status']}")
+                                        break
+                                    else:
+                                        raise Exception(f"status={response['status']}")
+                            except Exception as e:
+                                log(f"An error occurred while trying to copy shard {shard} from server {server}: {e}")
+                                log(f"Replicas have been lost")
+                                return
+            # all servers set up
+            # need to expose them by adding them to the hashing rings and the database (MapT)
+            for server_name in new_server_names:
+                for shard in request_body.servers[server_name]:
+                    async with shardDataMap[shard].writeLock:
+                        database.insert_map_record(MapRecord(Shard_id=shard,Server_id=server_name))
                         shardDataMap[shard].ch.add_server(server_name)
-                else:
-                    log(f"Unable to add server {server_name}")
         except Exception as e:
             data = {
                 'message': f"<Error> An error occurred while adding new servers: {e}",
@@ -236,7 +298,7 @@ async def remove_servers(request_body: RemoveRequest):
             # create set of all servers
             all_servers = set()
             for server in unique_servers:
-                all_servers.add(server[0])     
+                all_servers.add(server)     
 
             if num_remove > num_existing_servers:
                 data = {
@@ -572,47 +634,6 @@ def test():
 @app.get('/favicon.ico', status_code=204)
 def favicon():
     pass
-
-
-# forwarding requests to the nearest server
-@app.get('/{path}')
-async def home(path: str, request: Request):
-    if path != "home":
-        data = {
-            'Response': {
-                'message': f"<Error> ’/{path}’ endpoint does not exist in server replicas",
-                'status': "failure"
-            }
-        }
-        raise HTTPException(status_code=400, detail=data)
-
-    request_id = random.randint(100000, 1000000)  # random id temporarily
-
-    # Get the nearest server for the request
-    nearest_server = ch.get_nearest_server(request_id)
-    if nearest_server == '':
-        log("Couldn't route request: No servers available")
-        return JSONResponse(content="No servers available", status_code=503)
-    # Forward the request to the nearest server
-    try:
-        async with httpx.AsyncClient() as client:
-            response = await client.get(f"http://{nearest_server}:8080/{path}")
-    except:
-        log(f"Server {nearest_server} didn't respond")
-        # don't handle this failure multiple times, only once
-        # Need to use mutex lock to ensure the ConsistentHashing ring
-        # is not modified by anyone else
-        async with chLock:
-            if nearest_server in ch.get_servers():
-                handle_failure(nearest_server)
-
-        # access request object
-        url = str(request.url)
-        log("Redirecting to {}".format(url))
-        return RedirectResponse(url=url, status_code=307)  # let's try again, since we have handled the failure
-
-    # Return the response from the server
-    return  JSONResponse(content = response.content.decode('utf-8'), status_code = response.status_code)
 
 
 def delete_server(hostname, temporary=False):
