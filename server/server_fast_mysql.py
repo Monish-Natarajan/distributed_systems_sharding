@@ -10,6 +10,8 @@ from time import sleep
 import string
 import random
 
+from log_utils import write_log_entry, commit_logs
+
 app = FastAPI()
 
 server_identifier = 'server_test' # os.environ['HOSTNAME']
@@ -182,12 +184,53 @@ class WriteRequest(BaseModel):
     data: List[RowData]
 
 
+# end point for udating primary status
+# @app.post('/primary')
+
+
 @app.post('/write')
 async def write_entries(write_request: WriteRequest):
     cursor = db_connection.cursor()
     write_response = {}
     curr_idx = write_request.curr_idx
     
+    # write to logger
+    write_log_entry(
+        op_type="write",
+        shard_id=write_request.shard,
+        stud_id_low=write_request.data[0]["Stud_id"],
+        stud_id_high=write_request.data[-1]["Stud_id"]
+    )
+
+    shard = write_request.shard
+    query = "SELECT is_primary FROM shard_primary_mapping WHERE shard_id = %s"
+    cursor.execute(query, (shard,))
+    result = cursor.fetchone()
+    is_primary = result[0] if result else None
+    cursor.close()
+
+    if is_primary:
+        # get the replica address and 
+        hostnames = get_replica_address()
+        num_replicas = len(hostnames)
+
+        # forward incoming request to the replica
+        ...
+
+        # wait for response for success response from all of replicas
+        ...
+
+        if response_count < num_replicas:
+            endpoint_response = {
+                "message": "Write failed",
+                "status": "failed"
+            }
+            return JSONResponse(content=endpoint_response, status_code=500)
+        
+            # how will rollback be handled?
+
+    # when will the logs be committed?
+
     try:
         shard = write_request.shard
         # create entries
@@ -294,8 +337,28 @@ def initialize():
         except Error as error:
             print(f"MySQL Error: '{error}'")
 
+
+    create_table_query = """
+    CREATE TABLE IF NOT EXISTS shard_primary_mapping (
+        shard_id INT,
+        is_primary BOOLEAN,
+        PRIMARY KEY (shard_id)
+    )
+    """
+    try:
+        cursor.execute(create_table_query)
+        print("shard_primary_mapping table created successfully.")
+    except Error as e:
+        print(f"The error '{e}' occurred.")
+    finally:
+        cursor.close()
+
     cursor.close()
     db_connection.commit()
+
+def get_replica_address():
+    pass
+
 sleep(10)
 db_connection = mysql.connector.connect(
     host="127.0.0.1",
@@ -304,6 +367,16 @@ db_connection = mysql.connector.connect(
     database="distributed_systems",
     auth_plugin='mysql_native_password'
 )
+# connect to the logger database
+db_logger_connection = mysql.connector.connect(
+    host="127.0.0.1",
+    user="root", 
+    password="testing",
+    database="distributed_systems_logger",
+    auth_plugin='mysql_native_password'
+)
+
+PRIMARY=False # UPDATE THIS
 
 if __name__ == "__main__":
     initialize()
