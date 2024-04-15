@@ -1,5 +1,6 @@
 import uvicorn
 from fastapi import FastAPI, StreamingResponse
+from fastapi import UploadFile, File
 from fastapi.responses import JSONResponse
 from typing import List, Dict, Optional
 from typing_extensions import TypedDict
@@ -337,6 +338,14 @@ async def delete_entry(delete_request: DeleteRequest):
 async def get_log_file(shard_id: str):
     file = open(f"distributed_systems_logger_{shard_id}.db", "rb")
     return StreamingResponse(file, media_type="application/octet-stream")
+
+
+@app.post('/upload_log_file/{shard_id}')
+async def upload_log_file(shard_id: str, file: UploadFile = File(...)):
+    with open(f"distributed_systems_logger_{shard_id}.db", "wb") as out_file:
+        content = await file.read()
+        out_file.write(content)
+    return {"filename": file.filename}
 
 
 def initialize():

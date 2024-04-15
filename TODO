@@ -7,3 +7,4 @@
 6. Primary elect -> shard manager -> will need log files from servers
 7. replicate code in del and update in server
 8. modify write end point in load_balancer to send replica_hostnames list of strings to primary along with the data to be sent, see /write in server for more details
+9. - [x] /upload_logfile end point in server to accept new updated logfile for a shard, to occur after loadbalancer sends config
