@@ -76,7 +76,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
     # insert into ShardT
     try:
         for shard in request_body.shards:
-            record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
+            record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size)
             database.insert_shard_record(record)
         log("Successfully inserted records into ShardT")
         # insert into MapT
@@ -210,7 +210,7 @@ async def add_servers(request_body: AddRequest):
                         status_code=400
                     )
             for shard in request_body.new_shards:
-                record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size, valid_idx=1)
+                record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size)
                 database.insert_shard_record(record)
                 shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
             await asyncio.sleep(60) # wait for the servers to finish spawning
@@ -522,6 +522,10 @@ async def modify_record(request_body):
     }
     async with httpx.AsyncClient() as client:
         response = (await client.post(f"http://{primary_server}:8080/update", json=jsonable_encoder(request))).json()
+        if is_update:
+            response = (await client.post(f"http://{primary_server}:8080/update", json=jsonable_encoder(request))).json()
+        else:
+            response = (await client.post(f"http://{primary_server}:8080/delete", json=jsonable_encoder(request))).json()
         if response['status'] == "success":
             return JSONResponse(
                 content={
@@ -753,7 +757,6 @@ async def handle_failure(hostname):
                             async with httpx.AsyncClient() as client:
                                 request = {
                                     "shard": shard,
-                                    "curr_idx": 0,
                                     "data": retrievedShards[shard]
                                 }
                                 response = (await client.post(f"http://{new_hostname}:8080/write", json=jsonable_encoder(request))).json()
@@ -784,39 +787,11 @@ async def handle_failure(hostname):
             else:
                 log(f"Unable to add server {new_hostname}!")
 
-async def heartbeat_check():
-    # clean up the failureLocks dictionary
-    # get servers in use
-    while True:
-        async with adminLock:
-            servers_in_use = database.get_unique_servers()
-            log("Checking heartbeat")
-            for server_hostname in servers_in_use:
-                is_alive = False
-                for _ in range(3):
-                    try:
-                        with httpx.Client(timeout=httpx.Timeout(5)) as client:
-                            response = client.get(f"http://{server_hostname}:8080/heartbeat")
-                        if response.status_code == 200:
-                            is_alive = True
-                            break
-                    except Exception as e:
-                        log(f"heartbeat_check(): Exception raised wheile trying to check for liveliness of server {server_hostname}, "
-                                f"trying again: {e}")
-                if is_alive:
-                    log(f"{server_hostname} is alive -- passed heartbeat check")
-                else:
-                    # server is dead, spawn a new server to replace it
-                    await handle_failure(server_hostname)
-        await asyncio.sleep(20 * 60) # sleep for 20 minutes and then perform a check
-        
-
 async def main():
     loop = asyncio.get_event_loop()
     config = uvicorn.Config("lb_fast:app", host="0.0.0.0", port=5001)
     server = uvicorn.Server(config)
     #uvicorn.run("lb_fast:app", host="0.0.0.0", port=5001)
-    loop.create_task(heartbeat_check())
     await server.serve()
 
 if __name__ == "__main__":

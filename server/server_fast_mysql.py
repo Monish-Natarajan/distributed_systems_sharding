@@ -217,6 +217,101 @@ async def remove_slave(request: RemoveSlaveRequest):
         server_replicas[request.shard_id].remove(request.server_hostname)
     return JSONResponse(content={"message": f"Removed {request.server_hostname} as a replica for shard {request.shard_id}", "status": "success"}, status_code=200)
 
+
+async def modification_request(mod_request):
+    num_records = 1
+    query = ""
+    if type(mod_request) is WriteRequest:
+        op_type = "write"
+        num_records = len(mod_request.data)
+        # create entries
+        entries = ", ".join([f"({entry['Stud_id']}, '{entry['Stud_name']}', {entry['Stud_marks']})" for entry in mod_request.data])
+        query = f"INSERT INTO {mod_request.shard} (Stud_id, Stud_name, Stud_marks) VALUES {entries}"
+    elif type(mod_request) is UpdateRequest:
+        op_type = "update"
+        query = (f"UPDATE {shard} SET Stud_id = {mod_request.data['Stud_id']}, "
+            f"Stud_name = '{mod_request.data['Stud_name']}', "
+            f"Stud_marks = {mod_request.data['Stud_marks']} " 
+            f"WHERE Stud_id = {mod_request.Stud_id}")
+    elif type(mod_request) is DeleteRequest:
+        op_type = "delete"
+        query = f"DELETE FROM {shard} WHERE Stud_id = {mod_request.Stud_id}"
+    cursor = db_connection.cursor()
+    write_response = {}
+    async with writeLocks[mod_request.shard]:
+        # write to logger
+        write_log_entry(
+            shard_id=mod_request.shard,
+            op_type=op_type,
+            num_records=num_records,
+            json_data=mod_request.model_dump_json()
+        )
+
+        shard = mod_request.shard
+        is_primary = isPrimaryForShard[shard]
+
+        if is_primary:
+            # get the replica address and 
+            hostnames = server_replicas[shard]
+            num_replicas = len(hostnames)
+
+            response_count = 0
+            async def send_mod_request(replica_hostname, mod_request_copy):
+                async with AsyncClient() as client:
+                    response = await client.post(f"http://{replica_hostname}:8080/{op_type}", json=mod_request_copy)
+                    return (replica_hostname, response)
+            # launch async requests to secondary replicas together at once
+            # asynchronously resume the execution of the function once majority of the replicas
+            # have successfully written the data
+            tasks = []
+            for replica_hostname in hostnames:
+                task = asyncio.create_task(send_mod_request(replica_hostname, mod_request))
+                tasks.append(task)
+            response_count = 0
+            rollback_servers = []
+            for task in asyncio.as_completed(tasks):
+                replica_hostname, response = await task
+                if response.status_code == 200:
+                    response_count += 1
+                    rollback_servers.append(replica_hostname)
+            if response_count < (num_replicas + 1) / 2:
+                endpoint_response = {
+                    "message": f"{op_type} failed",
+                    "status": "failed"
+                }
+                # DO ROLLBACK
+                for server in rollback_servers:
+                    if type(mod_request) is WriteRequest:
+                        for record in mod_request.data:
+                            request = {
+                                "shard": shard,
+                                "data": record.Stud_id
+                            }
+                            async with AsyncClient() as client:
+                                response = await client.post(f"http://{server}:8080/delete", json=request)
+                                if response.status_code != 200:
+                                    print(f"Failed to rollback record from {server}")
+                return JSONResponse(content=endpoint_response, status_code=500)
+
+        # commit the transactions for the specified shard into the actual database
+        try:
+            cursor.execute(query)
+            db_connection.commit()
+        except Error as error:
+            print(f"MySQL Error: '{error}'")
+            endpoint_response = {
+                "message": f"MySQL Error :{error}",
+                "status": "failed"
+            }
+            return JSONResponse(content=endpoint_response, status_code=500)
+        finally:
+            cursor.close()
+        
+        write_response["message"] = "Operation '{op_type}' completed"
+        write_response["status"] = "success"
+        
+        return JSONResponse(content=write_response, status_code=200)
+
 @app.post('/write')
 async def write_entries(write_request: WriteRequest):
     cursor = db_connection.cursor()
@@ -338,7 +433,7 @@ class DeleteRequest(BaseModel):
     shard: str
     Stud_id: int
 
-@app.post('/del')
+@app.post('/delete')
 async def delete_entry(delete_request: DeleteRequest):
     cursor = db_connection.cursor()
     delete_response = {}

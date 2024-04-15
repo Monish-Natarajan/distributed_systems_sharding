@@ -49,7 +49,7 @@ class MapRecord:
     def __init__(self, Shard_id: str, Server_id: str, IsPrimary: bool):
         self.Shard_id = Shard_id
         self.Server_id = Server_id
-        self.IsPrimary = IsPrimary
+        # self.IsPrimary = IsPrimary
 
 def get_shards():
     with conn.cursor() as cursor:
@@ -72,7 +72,7 @@ def insert_shard_record(record: ShardRecord) -> None:
 
 def insert_map_record(record: MapRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', {record.IsPrimary})"
+        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', FALSE)"
         cursor.execute(query)
         conn.commit()
 
@@ -105,3 +105,30 @@ def mark_as_primary(server_id: str) -> None:
         query = f"UPDATE MapT SET IsPrimary = TRUE WHERE Server_id = '{server_id}'"
         cursor.execute(query)
         conn.commit()
+
+def primary_for_shard(shard_id: str):
+    # query the MapT table and see which server is marked as primary for this shard
+    with conn.cursor() as cursor:
+        query = f"SELECT Server_id FROM MapT WHERE Shard_id = '{shard_id}' AND IsPrimary = TRUE"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            return None
+def set_primary(shard_id: str, hostname: str):
+    # set the given server as the primary server for the given shard
+    # and unset all other servers as primary
+    with conn.cursor() as cursor:
+        query = f"UPDATE MapT SET IsPrimary = FALSE WHERE Shard_id = '{shard_id}'"
+        cursor.execute(query)
+        query = f"UPDATE MapT SET IsPrimary = TRUE WHERE Shard_id = '{shard_id}' AND Server_id = '{hostname}'"
+        cursor.execute(query)
+        conn.commit()
+
+def get_primaries(hostname: str):
+    # get all the shards for which the given server is the primary server
+    with conn.cursor() as cursor:
+        query = f"SELECT Shard_id FROM MapT WHERE Server_id = '{hostname}' AND IsPrimary = TRUE"
+        cursor.execute(query)
+        return [x[0] for x in cursor.fetchall()]
