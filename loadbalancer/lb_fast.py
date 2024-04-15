@@ -82,7 +82,7 @@ async def initalize_loadbalancer(request_body: InitRequest):
         # insert into MapT
         for server, shards in request_body.servers.items():
             for shard in shards:
-                record = MapRecord(Shard_id=shard, Server_id=server)
+                record = MapRecord(Shard_id=shard, Server_id=server, IsPrimary=False)
                 database.insert_map_record(record)
         log("Successfully inserted records into MapT")
     except Exception as e:
@@ -135,7 +135,8 @@ async def initalize_loadbalancer(request_body: InitRequest):
             'status': "failure"
         }
         raise HTTPException(status_code=400, detail=data)
-    
+    # flush database
+    database.conn.commit()
     reponse_data = {
         'message': "Configured database",
         'status': "success"
@@ -145,6 +146,10 @@ async def initalize_loadbalancer(request_body: InitRequest):
     # need to elect primaries for each shard through the /primary_elect endpoint of the shard manager
     for s in request_body.shards:
         async with httpx.AsyncClient() as client:
+            while len(database.get_servers_for_shard(s.Shard_id)) == 0:
+                print("Empty servers for shard", s.Shard_id)
+                await asyncio.sleep(1)
+            print(f"Length of servers for shard {s.Shard_id} is non-zero")
             response = (await client.get(f"http://shard_manager:8080/primary_elect/{s.Shard_id}")).json()
             set_primary(s.Shard_id, response['primary_server'])
 
@@ -209,7 +214,9 @@ async def add_servers(request_body: AddRequest):
                         },
                         status_code=400
                     )
+            new_shards = set()
             for shard in request_body.new_shards:
+                new_shards.add(shard.Shard_id)
                 record = ShardRecord(Stud_id_low=shard.Stud_id_low, Shard_id=shard.Shard_id, Shard_size=shard.Shard_size)
                 database.insert_shard_record(record)
                 shardDataMap[shard.Shard_id] = ShardData(shard.Shard_id)
@@ -227,64 +234,40 @@ async def add_servers(request_body: AddRequest):
                     response = (await client.post(f"http://{server_name}:8080/config", json=jsonable_encoder(request))).json()
                     if response['status'] != "success":
                         raise Exception(f"config() failed for server {server_name} with status {response['status']}")
+            log(f"Configured new servers {new_server_names}")
             # copy the old shards to the newly spawned servers as needed
             for server_name in new_server_names:
                 for shard in request_body.servers[server_name]:
-                    if shard in request_body.new_shards:
+                    if shard in new_shards:
                         continue # no need to copy anything
                     prim_server = primary_for_shard(shard)
-                    # Step 1: copy over the log file for this shard by asking for it through the /log_file/{shard_id} endpoint
+                    log(f"Copying shard {shard} to new server {server_name} from primary server {prim_server}")
+                    # copy over the log file for this shard by asking for it through the /log_file/{shard_id} endpoint
                     # on the primary server
-                    # Step 2: contact the primary server through the /copy endpoint, copy over the records to the new server
-                    async with httpx.AsyncClient() as client:
-                        response = await client.get(f"http://{prim_server}:8080/log_file/{shard}", stream=True)
+                    log_data = None
+                    with httpx.stream("GET", f"http://{prim_server}:8080/log_file/{shard}") as response:
                         if response.status_code != 200:
                             raise Exception(f"Failed to get log file for shard {shard} from primary server {prim_server}")
-                        # place this log file on the new server through /upload_log_file/{shard_id} endpoint on the new server
-                        log_file_data = await response.read()
-                        files = {"file": ("distributed_systems_logger_{shard}.db", log_file_data, "application/octet-stream")}
-                        upload_response = await client.post(f"http://new_server:8000/upload_log_file/{shard}", files=files)
+                        log_data = response.read()
+                    log(f"Got log file for shard {shard} from primary server {prim_server}")
+                    async with httpx.AsyncClient() as client:
+                        files = {"file": ("distributed_systems_logger_{shard}.db", log_data, "application/octet-stream")}
+                        upload_response = await client.post(f"http://{server_name}:8080/upload_log_file/{shard}", files=files)
                         if upload_response.status_code != 200:
                             raise Exception(f"Failed to upload log file for shard {shard} to new server")
-
-
-                    # choose a server that contains this shard
-                    for server in shardDataMap[shard].ch.get_servers():
-                        # copy data from this server
-                        try:
-                            async with httpx.AsyncClient() as client:
-                                response = (await client.post(f"http://{server}:8080/copy", json=jsonable_encoder({"shards": [shard]}))).json()
-                                if response['status'] == "success":
-                                    # write this shard to the new server
-                                    request = {
-                                        "shard": shard,
-                                        "curr_idx": 0,
-                                        "data": response[shard]
-                                    }
-                                    response = (await client.post(f"http://{server_name}:8080/write", json=jsonable_encoder(request))).json()
-                                    if response['status'] != "success":
-                                        raise Exception(f"write() failed for shard {shard} with status {response['status']}")
-                                    break
-                                else:
-                                    raise Exception(f"status={response['status']}")
-                        except Exception as e:
-                            log(f"An error occurred while trying to copy shard {shard} from server {server}: {e}")
-                            log(f"Replicas have been lost")
-                            return
             # all servers set up
             # need to expose them by adding them to the hashing rings and the database (MapT)
             for server_name in new_server_names:
                 for shard in request_body.servers[server_name]:
-                    async with shardDataMap[shard].writeLock:
-                        database.insert_map_record(MapRecord(Shard_id=shard,Server_id=server_name))
-                        shardDataMap[shard].ch.add_server(server_name)
+                    database.insert_map_record(MapRecord(Shard_id=shard,Server_id=server_name,IsPrimary=False))
+                    shardDataMap[shard].ch.add_server(server_name)
         except Exception as e:
             data = {
                 'message': f"<Error> An error occurred while adding new servers: {e}",
                 'status': "failure"
             }
             raise HTTPException(status_code=400, detail=data)
-
+        log(f"Successfully added servers {new_server_names} properly")
         # get total number of servers from MapT
         unique_servers = database.get_unique_servers()
         num_servers = len(unique_servers)
@@ -297,11 +280,17 @@ async def add_servers(request_body: AddRequest):
             'message': message,
             'status': "success"
         }
-        with httpx.AsyncClient() as client:
+        log(f"Response data: {repsonse_data}")
+        log(f"Starting election for new shards")
+        async with httpx.AsyncClient() as client:
             # elect primaries for the new shards
             for shard in request_body.new_shards:
                 response = await client.get(f"http://shard_manager:8080/primary_elect/{shard.Shard_id}")
+                if response.status_code != 200:
+                    raise Exception(f"Failed to elect primary for shard {shard.Shard_id}")
+                response = response.json()
                 set_primary(shard.Shard_id, response['primary_server'])
+        log(f"Done with elections")
         return JSONResponse(content=repsonse_data, status_code=200)
 
 
@@ -342,7 +331,7 @@ async def remove_servers(request_body: RemoveRequest):
                 # elect primary for shards that this server was primary for
                 for shard in database.get_primaries(server_name):
                     async with httpx.AsyncClient() as client:
-                        response = await client.get(f"http://shard_manager:8080/primary_elect/{shard}")
+                        response = await client.get(f"http://shard_manager:8080/primary_elect/{shard}").json()
                         set_primary(shard, response['primary_server'])
         
         except Exception as e:
@@ -475,21 +464,38 @@ async def write(request_body: WriteRequest):
                 shardWriteMap[shard[1]].append(record)
                 break
 
-    shardsWritten: List[str] = [] 
+    lenWritten = 0
     for shard_id, records in shardWriteMap.items():
         # contact the primary server responsible for this shard and pass on the request to it
         primary_server = primary_for_shard(shard_id)
+        print(f"DEBUG -- Writing to shard {shard_id}, primary server {primary_server}")
+        print(f"DEBUG -- record data: {records}")
         async with httpx.AsyncClient() as client:
             request = {
                 "shard": shard_id,
                 "data": records
             }
-            response = (await client.post(f"http://{primary_server}:8080/write", json=jsonable_encoder(request))).json()
-            if response.status_code != 200:
-                log(f"Failed to write to shard {shard_id}")
+            print(f"DEBUG -- Writing to shard {shard_id}")
+            print(f"DEBUG -- data: {records}")
+            try:
+                response = (await client.post(f"http://{primary_server}:8080/write", json=jsonable_encoder(request)))
+                if response.status_code != 200:
+                    log(f"Failed to write to shard {shard_id}")
+                    # no need to rollback writes
+                    # proceed with other shards
+                    continue
+            except Exception as e:
+                log(f"Failed to write to shard {shard_id}: {e}")
                 # no need to rollback writes
                 # proceed with other shards
                 continue
+            lenWritten += len(records)
+    return JSONResponse(
+        content={
+            "message": f"Successfully written {lenWritten} records",
+            "status": "success"
+        }
+    )
 
 async def modify_record(request_body):
     is_update: bool = (type(request_body) is UpdateRequest)
@@ -515,17 +521,23 @@ async def modify_record(request_body):
     oldRecord = oldRecord[0]
     # forward the request to the appropriate primary server for this shard
     primary_server = primary_for_shard(shard_id)
-    request = {
-        "shard": shard_id,
-        "Stud_id": request_body.Stud_id,
-        "data": request_body.data
-    }
+    if is_update:
+        request = {
+            "shard": shard_id,
+            "Stud_id": request_body.Stud_id,
+            "data": request_body.data
+        }
+    else:
+        request = {
+            "shard": shard_id,
+            "Stud_id": request_body.Stud_id
+        }
     async with httpx.AsyncClient() as client:
-        response = (await client.post(f"http://{primary_server}:8080/update", json=jsonable_encoder(request))).json()
         if is_update:
             response = (await client.post(f"http://{primary_server}:8080/update", json=jsonable_encoder(request))).json()
         else:
             response = (await client.post(f"http://{primary_server}:8080/delete", json=jsonable_encoder(request))).json()
+        log(f"Response: {response}")
         if response['status'] == "success":
             return JSONResponse(
                 content={
@@ -534,7 +546,7 @@ async def modify_record(request_body):
                 },
                 status_code=200
             )
-        else: 
+        else:
             return JSONResponse(
                 content={
                     "message": "Failed to update record",
@@ -685,8 +697,6 @@ async def handle_failure(hostname):
             shards_to_copy = database.get_shards_for_server(hostname)
             # need to remove it from the MapT table, it has already been removed the consistent hashing rings
 
-            # this server might be the primary for certain shards, make a list of them
-            primaries = database.get_primaries(hostname) # list of shards whose primary server is {hostname}
             try:
                 database.delete_map_server(hostname)
             except Exception as e:
@@ -705,39 +715,27 @@ async def handle_failure(hostname):
             if res == "success":
                 try:                    
                     # * copy the old shards from servers that contain them
-                    # * each server has an endpoint called /copy that gives us the
-                    #   shard we want in its entirety
-                    # * shards_to_copy is a list of shard_ids that we hope to copy from the remaining
-                    #   replicas, retrievedShards is a dict of shards that we could actually recover mapping
-                    #   to their contents
-                    retrievedShards: Dict[str, List[StudentModel]] = {}
+                    # * we will do this by copying the logs and passing them to the new server
+                    retrievedLogs = {}
                     for shard in shards_to_copy:
-                        # choose a server that contains this shard
-                        chRing = shardDataMap[shard].ch
-                        servers_with_shard = chRing.get_servers()
-                        # try to copy from every server possible until one of them
-                        # responds
-                        request = {
-                            "shards": [shard]
-                        }
-                        for server in servers_with_shard:
-                            try:
-                                async with httpx.AsyncClient() as client:
-                                    response = (await client.post(f"http://{server}:8080/copy", json=jsonable_encoder(request))).json()
-                                    if response['status'] == "success":
-                                        retrievedShards[shard] = response[shard]
-                                        break
-                                    else:
-                                        raise Exception(f"status={response['status']}")  # try the next server after exception handling                                    
-                            except Exception as e:
-                                log(f"handle_failure(): Exception raised while trying to copy shard {shard} from server {server}: {e}")
+                        # check if this shard has a primary, if not elect a new one, and then copy the data from the primary
+                        if primary_for_shard(shard) is None:
+                            async with httpx.AsyncClient() as client:
+                                response = (await client.get(f"http://shard_manager:8080/primary_elect/{shard}")).json()
+                                set_primary(shard, response['primary_server'])
+                        prim_server = primary_for_shard(shard)
+                        # copy the logs from the primary server
+                        with httpx.stream("GET", f"http://{prim_server}:8080/log_file/{shard}") as response:
+                            if response.status_code != 200:
+                                log(f"Failed to get log file for shard {shard} from primary server {prim_server}")
+                            retrievedLogs[shard] = response.read()                        
                     # * place the shard data in the new server
                     # * we need to config the server through the /config endpoint
                     try:
                         async with httpx.AsyncClient() as client:
                             request = {
                                 "schema": schemaConfig,
-                                "shards": list(retrievedShards.keys())
+                                "shards": list(retrievedLogs.keys())
                             }
                             response = (await client.post(f"http://{new_hostname}:8080/config", json=jsonable_encoder(request))).json()
                             log(f"DEBUG -- {response}")
@@ -751,17 +749,15 @@ async def handle_failure(hostname):
                         return
                     # config is done, need to copy the data we retrieved to the new server
                     successfullyCopiedShards: List[str] = []
-                    for shard in retrievedShards:
-                        # try to write this shard to the new server
+                    for shard in retrievedLogs:
                         try:
                             async with httpx.AsyncClient() as client:
-                                request = {
-                                    "shard": shard,
-                                    "data": retrievedShards[shard]
-                                }
-                                response = (await client.post(f"http://{new_hostname}:8080/write", json=jsonable_encoder(request))).json()
-                                if response['status'] != "success":
-                                    raise Exception(f"write() failed for shard {shard} with status {response['status']}")
+                                # send the log file to the new server
+                                files = {"file": ("distributed_systems_logger_{shard}.db", retrievedLogs[shard], "application/octet-stream")}
+                                response = await client.post(f"http://{new_hostname}:8080/upload_log_file/{shard}", files=files)
+                                if response.status_code != 200:
+                                    log(f"Failed to upload log file for shard {shard} to new server")
+                                    continue
                             successfullyCopiedShards.append(shard)
                         except Exception as e:
                             log(f"handle_failure(): Exception raised while trying to write shard {shard} to server {new_hostname}: {e}")
@@ -769,18 +765,13 @@ async def handle_failure(hostname):
                             continue # copying this shard failed, lost a replica, can't do much, move on to the next shard
                     # add it to the MapT table with the corresponding old shards
                     for shard in successfullyCopiedShards:
-                        record = MapRecord(Shard_id=shard, Server_id=new_hostname)
+                        record = MapRecord(Shard_id=shard, Server_id=new_hostname,IsPrimary=False)
                         database.insert_map_record(record)
                         # need to add the new server to the consistent hashing ring for all the shards it has a replica of
                         shardDataMap[shard].ch.add_server(new_hostname)
                     log(f"Succesfully added server {new_hostname} to replace {hostname}")
                     deadServers.append(hostname) # prevent further failure handling for the old server that's no more
                     asyncio.get_event_loop().create_task(reapDeadServer(hostname))
-                    for shard in primaries:
-                        # elect a new primary for this shard
-                        async with httpx.AsyncClient() as client:
-                            response = (await client.get(f"http://shard_manager:8080/primary_elect/{shard}")).json()
-                            set_primary(shard, response['primary_server'])
                 except Exception as e:
                     log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
                     # can't do much, let's just continue

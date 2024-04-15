@@ -11,7 +11,7 @@ DB = "load_balancer_database"
 
 try:
     # busy loop with a sleep of 1 second until the DB server is up
-    retries = 5
+    retries = 20
     while retries:
         try:
             conn = mysql.connector.connect(
@@ -33,6 +33,7 @@ try:
                 exit(1)
     # create the ShardT and MapT tables if they don't exist
     with conn.cursor() as cursor:
+        cursor.execute("SET SESSION TRANSACTION ISOLATION LEVEL READ COMMITTED")
         cursor.execute("CREATE TABLE IF NOT EXISTS ShardT (Stud_id_low INT, Shard_id VARCHAR(255) PRIMARY KEY, Shard_size INT)")
         cursor.execute("CREATE TABLE IF NOT EXISTS MapT (Shard_id VARCHAR(255), Server_id VARCHAR(255), IsPrimary BOOLEAN)")
         conn.commit()
@@ -49,7 +50,7 @@ class MapRecord:
     def __init__(self, Shard_id: str, Server_id: str, IsPrimary: bool):
         self.Shard_id = Shard_id
         self.Server_id = Server_id
-        # self.IsPrimary = IsPrimary
+        self.IsPrimary = IsPrimary
 
 def get_shards():
     with conn.cursor() as cursor:
@@ -72,7 +73,7 @@ def insert_shard_record(record: ShardRecord) -> None:
 
 def insert_map_record(record: MapRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', FALSE)"
+        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', {record.IsPrimary})"
         cursor.execute(query)
         conn.commit()
 

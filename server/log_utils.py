@@ -1,9 +1,10 @@
 import sqlite3
-
 # dictionary of connection objects one for each shard
 db_logger_connection = {}
 
 def add_connector(shard_id):
+    if shard_id in db_logger_connection:
+        db_logger_connection[shard_id].close()
     db_logger_connection[shard_id] = sqlite3.connect(
         database=f"distributed_systems_logger_{shard_id}.db",
     )
@@ -49,6 +50,20 @@ def write_log_entry(shard_id, op_type, num_records, json_data):
         commit_logs(shard_id) # flush changes to disk
         cursor.close()
 
+def get_logs(shard_id):
+    # each log entry in the table "logs" has the format (op_type, num_records, json_data) 
+    # where op_type is the operation type (write, update, delete) and num_records is the number of records affected
+    # json_data is the actual data that was written, updated or deleted, depending on the request type
+    try:
+        cursor = db_logger_connection[shard_id].cursor()
+        cursor.execute("SELECT * FROM logs")
+        logs = cursor.fetchall()
+        cursor.close()
+    except sqlite3.Error as er:
+        print('SQLite error: %s' % (' '.join(er.args)))
+        print("Exception class is: ", er.__class__)
+        raise er
+    return logs
 
 def commit_logs(shard_id):
     try:
@@ -65,6 +80,8 @@ def count_log_entries(shard_id):
         cursor.execute("SELECT SUM(num_records) FROM logs")
         count = cursor.fetchone()[0]
         cursor.close()
+        if count is None:
+            return 0
         return count
     except sqlite3.Error as er:
         print('SQLite error: %s' % (' '.join(er.args)))

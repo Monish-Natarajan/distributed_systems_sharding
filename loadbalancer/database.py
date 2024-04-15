@@ -49,7 +49,7 @@ class MapRecord:
     def __init__(self, Shard_id: str, Server_id: str, IsPrimary: bool):
         self.Shard_id = Shard_id
         self.Server_id = Server_id
-        # self.IsPrimary = IsPrimary
+        self.IsPrimary = IsPrimary
 
 def get_shards():
     with conn.cursor() as cursor:
@@ -72,7 +72,7 @@ def insert_shard_record(record: ShardRecord) -> None:
 
 def insert_map_record(record: MapRecord) -> None:
     with conn.cursor() as cursor:
-        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', FALSE)"
+        query = f"INSERT INTO MapT VALUES ('{record.Shard_id}', '{record.Server_id}', {record.IsPrimary})"
         cursor.execute(query)
         conn.commit()
 

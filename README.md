@@ -19,8 +19,8 @@ make clean                  # to wrap things up
 
 # Performance
 
-![Read performance](output/read_performance.png)
-![Write performance](output/write_performance.png)
+![Read performance](output/read.png)
+![Write performance](output/write.png)
 
 
 | Configuration                      |   Write   |   Read    |
@@ -46,14 +46,14 @@ This Python script uses the FastAPI framework to create a RESTful API server tha
 ## Endpoints
 
 - `GET /home`: Returns a greeting message from the server.
-- `GET /heartbeat`: Returns an empty response.
+- `GET /heartbeat`: Returns an empty response
 - `POST /config`: Configures the database schema and shards based on the provided request.
 - `POST /autopopulate`: Populates the database with random data for testing purposes.
 - `POST /copy`: Copies all entries from the specified shards.
 - `POST /read`: Reads entries from a specified shard within a given Stud_id range.
 - `POST /write`: Writes a list of entries to a specified shard.
 - `PUT /update`: Updates a specific entry in a specified shard.
-- `POST /del`: Deletes a specific entry from a specified shard.
+- `POST /delete`: Deletes a specific entry from a specified shard.
 
 ## Data Models
 
@@ -65,7 +65,7 @@ This Python script uses the FastAPI framework to create a RESTful API server tha
 - `RowData`: Defines the data for a single row in the database.
 - `WriteRequest`: Defines the request body for the `/write` endpoint.
 - `UpdateRequest`: Defines the request body for the `/update` endpoint.
-- `DeleteRequest`: Defines the request body for the `/del` endpoint.
+- `DeleteRequest`: Defines the request body for the `/delete` endpoint.
 
 ## Database Connection
 
@@ -112,7 +112,6 @@ Class representing shard data.
 
 - `shard_id`: `str`. Unique identifier for the shard.
 - `ch`: `ConsistentHashing`. Object for consistent hashing.
-- `writeLock`: `asyncio.Lock`. Mutex lock for write operations.
 
 #### `reapDeadServer(hostname)`
 
@@ -351,8 +350,7 @@ Endpoint to write data to the distributed system.
    - Groups the writes by shard to minimize the number of requests.
 
 3. **Writing Data**:
-   - Performs writes to each shard, taking the appropriate mutex lock for each shard.
-   - For each shard, writes data to all servers hosting that shard.
+   - Hands over the write to the appropriate primary server
 
 4. **Error Handling**:
    - Logs errors encountered during writes.
