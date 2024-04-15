@@ -12,13 +12,18 @@ from time import sleep
 import string
 import random
 from httpx import AsyncClient
-
-from log_utils import write_log_entry, commit_logs, add_connector, init_logger
+from models import *
+from log_utils import *
+import asyncio
 
 app = FastAPI()
 
 server_identifier = 'server_test' # os.environ['HOSTNAME']
 isPrimaryForShard: Dict[str, bool] = {} # is this server the primary server for a given shard id
+writeLocks: Dict[str, asyncio.Lock] = {} # writeLocks maps shard_id to a write lock for that shard
+
+server_replicas: Dict[str, List[str]] = {} # server_replicas maps shard_id to a list of replica hostnames (only useful for primary servers)
+
 @app.get('/home')
 async def home():
     data = {
@@ -189,78 +194,109 @@ class RowData(TypedDict):
 class WriteRequest(BaseModel):
     shard: str
     data: List[RowData]
-    replica_hostnames: Optional[List[str]] = None
 
+@app.get('/primary_elect/{shard_id}')
+async def make_primary(shard_id: str):
+    isPrimaryForShard[shard_id] = True
+    return JSONResponse(content={"message": f"{server_identifier} is now primary for shard {shard_id}", "status": "success"}, status_code=200)
+
+@app.post('/add_slave')
+async def add_slave(request: AddSlaveRequest):
+    if not isPrimaryForShard[request.shard_id]:
+        # return error response saying this server is not a primary server for this shard
+        return JSONResponse(content={"message": f"{server_identifier} is not primary for shard {request.shard_id}", "status": "failed"}, status_code=500)
+    if request.server_hostname not in server_replicas[request.shard_id]:
+        server_replicas[request.shard_id].append(request.server_hostname)
+    return JSONResponse(content={"message": f"Added {request.server_hostname} as a replica for shard {request.shard_id}", "status": "success"}, status_code=200)
+@app.post('/remove_slave')
+async def remove_slave(request: RemoveSlaveRequest):
+    if not isPrimaryForShard[request.shard_id]:
+        # return error response saying this server is not a primary server for this shard
+        return JSONResponse(content={"message": f"{server_identifier} is not primary for shard {request.shard_id}", "status": "failed"}, status_code=500)
+    if request.server_hostname in server_replicas[request.shard_id]:
+        server_replicas[request.shard_id].remove(request.server_hostname)
+    return JSONResponse(content={"message": f"Removed {request.server_hostname} as a replica for shard {request.shard_id}", "status": "success"}, status_code=200)
 
 @app.post('/write')
 async def write_entries(write_request: WriteRequest):
     cursor = db_connection.cursor()
     write_response = {}
-    
-    # write to logger
-    write_log_entry(
-        shard_id=write_request.shard,
-        op_type="write",
-        stud_id_low=write_request.data[0]["Stud_id"],
-        stud_id_high=write_request.data[-1]["Stud_id"]
-    )
+    async with writeLocks[write_request.shard]:
+        # write to logger
+        write_log_entry(
+            shard_id=write_request.shard,
+            op_type="write",
+            num_records=len(write_request.data),
+            json_data=write_request.model_dump_json()
+        )
 
-    shard = write_request.shard
-    is_primary = isPrimaryForShard[shard]
+        shard = write_request.shard
+        is_primary = isPrimaryForShard[shard]
 
-    if is_primary:
-        # get the replica address and 
-        hostnames = write_request.replica_hostnames
-        num_replicas = len(hostnames)
+        if is_primary:
+            # get the replica address and 
+            hostnames = server_replicas[shard]
+            num_replicas = len(hostnames)
 
-        # create copy of request json and nullify the replica_hostnames
-        write_request_copy = write_request.dict()
-        del write_request_copy['replica_hostnames']
-        write_request_copy = WriteRequest(**write_request_copy)
-
-        response_count = 0
-        async with AsyncClient() as client:
-            for hostname in hostnames:
-                response = await client.post(f"http://{hostname}/write", json=write_request_copy.dict())
+            response_count = 0
+            async def send_write_request(replica_hostname, write_request_copy):
+                async with AsyncClient() as client:
+                    response = await client.post(f"http://{replica_hostname}:8080/write", json=write_request_copy)
+                    return (replica_hostname, response)
+            # launch async requests to secondary replicas together at once
+            # asynchronously resume the execution of the function once majority of the replicas
+            # have successfully written the data
+            tasks = []
+            for replica_hostname in hostnames:
+                task = asyncio.create_task(send_write_request(replica_hostname, write_request))
+                tasks.append(task)
+            response_count = 0
+            rollback_servers = []
+            for task in asyncio.as_completed(tasks):
+                replica_hostname, response = await task
                 if response.status_code == 200:
                     response_count += 1
+                    rollback_servers.append(replica_hostname)
+            if response_count < (num_replicas + 1) / 2:
+                endpoint_response = {
+                    "message": "Write failed",
+                    "status": "failed"
+                }
+                # DO ROLLBACK
+                for server in rollback_servers:
+                    for record in write_request.data:
+                        request = {
+                            "shard": shard,
+                            "data": record.Stud_id
+                        }
+                        async with AsyncClient() as client:
+                            response = await client.post(f"http://{server}:8080/del", json=request)
+                            if response.status_code != 200:
+                                print(f"Failed to rollback record from {server}")
+                return JSONResponse(content=endpoint_response, status_code=500)
 
-        if response_count < num_replicas:
+        # commit the transactions for the specified shard into the actual database
+        try:
+            shard = write_request.shard
+            # create entries
+            entries = ", ".join([f"({entry['Stud_id']}, '{entry['Stud_name']}', {entry['Stud_marks']})" for entry in write_request.data])
+            query = f"INSERT INTO {shard} (Stud_id, Stud_name, Stud_marks) VALUES {entries}"
+            cursor.execute(query)
+            db_connection.commit()
+        except Error as error:
+            print(f"MySQL Error: '{error}'")
             endpoint_response = {
-                "message": "Write failed",
+                "message": f"MySQL Error :{error}",
                 "status": "failed"
             }
-            # DO ROLLBACK
             return JSONResponse(content=endpoint_response, status_code=500)
-
-    # commit the logs for the specified shard
-    commit_logs(write_request.shard)
-
-    try:
-        shard = write_request.shard
-        # create entries
-        entries = ", ".join([f"({entry['Stud_id']}, '{entry['Stud_name']}', {entry['Stud_marks']})" for entry in write_request.data])
-        query = f"INSERT INTO {shard} (Stud_id, Stud_name, Stud_marks) VALUES {entries}"
-        cursor.execute(query)
-        db_connection.commit()
-
-        # get the number of entries written
-        num_entries_written = cursor.rowcount
-    
-    except Error as error:
-        print(f"MySQL Error: '{error}'")
-        endpoint_response = {
-            "message": f"MySQL Error :{error}",
-            "status": "failed"
-        }
-        return JSONResponse(content=endpoint_response, status_code=500)
-    finally:
-        cursor.close()
-    
-    write_response["message"] = "Data entries added"
-    write_response["status"] = "success"
-    
-    return JSONResponse(content=write_response, status_code=200)
+        finally:
+            cursor.close()
+        
+        write_response["message"] = "Data entries added"
+        write_response["status"] = "success"
+        
+        return JSONResponse(content=write_response, status_code=200)
 
 
 class UpdateRequest(BaseModel):
@@ -306,6 +342,10 @@ class DeleteRequest(BaseModel):
 async def delete_entry(delete_request: DeleteRequest):
     cursor = db_connection.cursor()
     delete_response = {}
+    is_primary = isPrimaryForShard[delete_request.shard]
+    if is_primary:
+        # do the same thing we did for /write
+        hostnames = delete_request.replica_hostnames
 
     try:
         shard = delete_request.shard
@@ -332,9 +372,12 @@ async def delete_entry(delete_request: DeleteRequest):
 async def get_log_file(shard_id: str):
     file = open(f"distributed_systems_logger_{shard_id}.db", "rb")
     return StreamingResponse(file, media_type="application/octet-stream")
-@app.get('num_log_entries/{shard_id}')
+@app.get('/num_log_entries/{shard_id}')
 async def get_num_entries(shard_id: str):
-    pass
+    response = {
+        "num_entries": count_log_entries(shard_id)
+    }
+    return JSONResponse(content=response, status_code=200)
 
 @app.post('/upload_log_file/{shard_id}')
 async def upload_log_file(shard_id: str, file: UploadFile = File(...)):

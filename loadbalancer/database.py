@@ -105,3 +105,23 @@ def mark_as_primary(server_id: str) -> None:
         query = f"UPDATE MapT SET IsPrimary = TRUE WHERE Server_id = '{server_id}'"
         cursor.execute(query)
         conn.commit()
+
+def primary_for_shard(shard_id: str):
+    # query the MapT table and see which server is marked as primary for this shard
+    with conn.cursor() as cursor:
+        query = f"SELECT Server_id FROM MapT WHERE Shard_id = '{shard_id}' AND IsPrimary = TRUE"
+        cursor.execute(query)
+        result = cursor.fetchone()
+        if result:
+            return result[0]
+        else:
+            return None
+def set_primary(shard_id: str, hostname: str):
+    # set the given server as the primary server for the given shard
+    # and unset all other servers as primary
+    with conn.cursor() as cursor:
+        query = f"UPDATE MapT SET IsPrimary = FALSE WHERE Shard_id = '{shard_id}'"
+        cursor.execute(query)
+        query = f"UPDATE MapT SET IsPrimary = TRUE WHERE Shard_id = '{shard_id}' AND Server_id = '{hostname}'"
+        cursor.execute(query)
+        conn.commit()

@@ -11,6 +11,17 @@ services:
       - mynet
     group_add:
       - $DOCKER_GID
+  shard_manager_service:
+    build: ./shard_manager
+    container_name: shard_manager
+    ports:
+      - "8080:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - mynet
+    group_add:
+      - $DOCKER_GID
     
 networks:
   mynet:

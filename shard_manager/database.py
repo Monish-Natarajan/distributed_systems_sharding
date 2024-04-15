@@ -6,7 +6,7 @@ from time import sleep
 
 USER = "root"
 PASSWORD = "testing"
-HOST = "localhost"
+HOST = "load_balancer"
 DB = "load_balancer_database"
 
 try:
