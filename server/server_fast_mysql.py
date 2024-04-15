@@ -314,84 +314,7 @@ async def modification_request(mod_request):
 
 @app.post('/write')
 async def write_entries(write_request: WriteRequest):
-    cursor = db_connection.cursor()
-    write_response = {}
-    async with writeLocks[write_request.shard]:
-        # write to logger
-        write_log_entry(
-            shard_id=write_request.shard,
-            op_type="write",
-            num_records=len(write_request.data),
-            json_data=write_request.model_dump_json()
-        )
-
-        shard = write_request.shard
-        is_primary = isPrimaryForShard[shard]
-
-        if is_primary:
-            # get the replica address and 
-            hostnames = server_replicas[shard]
-            num_replicas = len(hostnames)
-
-            response_count = 0
-            async def send_write_request(replica_hostname, write_request_copy):
-                async with AsyncClient() as client:
-                    response = await client.post(f"http://{replica_hostname}:8080/write", json=write_request_copy)
-                    return (replica_hostname, response)
-            # launch async requests to secondary replicas together at once
-            # asynchronously resume the execution of the function once majority of the replicas
-            # have successfully written the data
-            tasks = []
-            for replica_hostname in hostnames:
-                task = asyncio.create_task(send_write_request(replica_hostname, write_request))
-                tasks.append(task)
-            response_count = 0
-            rollback_servers = []
-            for task in asyncio.as_completed(tasks):
-                replica_hostname, response = await task
-                if response.status_code == 200:
-                    response_count += 1
-                    rollback_servers.append(replica_hostname)
-            if response_count < (num_replicas + 1) / 2:
-                endpoint_response = {
-                    "message": "Write failed",
-                    "status": "failed"
-                }
-                # DO ROLLBACK
-                for server in rollback_servers:
-                    for record in write_request.data:
-                        request = {
-                            "shard": shard,
-                            "data": record.Stud_id
-                        }
-                        async with AsyncClient() as client:
-                            response = await client.post(f"http://{server}:8080/del", json=request)
-                            if response.status_code != 200:
-                                print(f"Failed to rollback record from {server}")
-                return JSONResponse(content=endpoint_response, status_code=500)
-
-        # commit the transactions for the specified shard into the actual database
-        try:
-            shard = write_request.shard
-            # create entries
-            entries = ", ".join([f"({entry['Stud_id']}, '{entry['Stud_name']}', {entry['Stud_marks']})" for entry in write_request.data])
-            query = f"INSERT INTO {shard} (Stud_id, Stud_name, Stud_marks) VALUES {entries}"
-            cursor.execute(query)
-            db_connection.commit()
-        except Error as error:
-            print(f"MySQL Error: '{error}'")
-            endpoint_response = {
-                "message": f"MySQL Error :{error}",
-                "status": "failed"
-            }
-            return JSONResponse(content=endpoint_response, status_code=500)
-        finally:
-            cursor.close()
-        
-        write_response["message"] = "Data entries added"
-        write_response["status"] = "success"
-        
-        return JSONResponse(content=write_response, status_code=200)
+    return await modification_request(write_request)
 
 
 class UpdateRequest(BaseModel):
@@ -401,32 +324,7 @@ class UpdateRequest(BaseModel):
 
 @app.put('/update')
 async def update_entry(update_request: UpdateRequest):
-    cursor = db_connection.cursor()
-    update_response = {}
-
-    try:
-        shard = update_request.shard
-        query = (f"UPDATE {shard} SET Stud_id = {update_request.data['Stud_id']}, "
-            f"Stud_name = '{update_request.data['Stud_name']}', "
-            f"Stud_marks = {update_request.data['Stud_marks']} " 
-            f"WHERE Stud_id = {update_request.Stud_id}")
-        
-        cursor.execute(query)
-        db_connection.commit()
-    except Error as error:
-        print(f"MySQL Error: '{error}'")
-        endpoint_response = {
-            "message": f"MySQL Error :{error}",
-            "status": "failed"
-        }
-        return JSONResponse(content=endpoint_response, status_code=500)
-    finally:
-        cursor.close()
-    
-    update_response["message"] = f"Data entry for Stud_id: {update_request.Stud_id} updated"
-    update_response["status"] = "success"
-
-    return JSONResponse(content=update_response, status_code=200)
+    return await modification_request(update_request)
 
 
 class DeleteRequest(BaseModel):
@@ -435,32 +333,7 @@ class DeleteRequest(BaseModel):
 
 @app.post('/delete')
 async def delete_entry(delete_request: DeleteRequest):
-    cursor = db_connection.cursor()
-    delete_response = {}
-    is_primary = isPrimaryForShard[delete_request.shard]
-    if is_primary:
-        # do the same thing we did for /write
-        hostnames = delete_request.replica_hostnames
-
-    try:
-        shard = delete_request.shard
-        query = f"DELETE FROM {shard} WHERE Stud_id = {delete_request.Stud_id}"
-        cursor.execute(query)
-        db_connection.commit()
-    except Error as error:
-        print(f"MySQL Error: '{error}'")
-        endpoint_response = {
-            "message": f"MySQL Error :{error}",
-            "status": "failed"
-        }
-        return JSONResponse(content=endpoint_response, status_code=500)
-    finally:
-        cursor.close()
-    
-    delete_response["message"] = f"Data entry for Stud_id: {delete_request.Stud_id} removed"
-    delete_response["status"] = "success"
-
-    return JSONResponse(content=delete_response, status_code=200)
+    return await modification_request(delete_request)
 
 
 @app.get('/log_file/{shard_id}')
