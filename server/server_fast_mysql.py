@@ -13,7 +13,7 @@ import string
 import random
 from httpx import AsyncClient
 
-from log_utils import write_log_entry, commit_logs
+from log_utils import write_log_entry, commit_logs, add_connector, init_logger
 
 app = FastAPI()
 
@@ -60,6 +60,8 @@ async def config(config_request: ConfigRequest):
     except Error as error:
         print(f"MySQL Error: '{error}'")
 
+    # send shard list and init logger
+    init_logger(config_request.shards)
 
     for shard in config_request.shards:
         table_creation_query = f"CREATE TABLE IF NOT EXISTS {shard} ("
@@ -345,7 +347,10 @@ async def upload_log_file(shard_id: str, file: UploadFile = File(...)):
     with open(f"distributed_systems_logger_{shard_id}.db", "wb") as out_file:
         content = await file.read()
         out_file.write(content)
-    return {"filename": file.filename}
+    add_connector(shard_id)
+    # JSON success response
+    return JSONResponse(content={"message": "Log file uploaded successfully", "status": "success"}, status_code=200) 
+
 
 
 def initialize():

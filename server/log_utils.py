@@ -3,6 +3,11 @@ import sqlite3
 # dictionary of connection objects one for each shard
 db_logger_connection = {}
 
+def add_connector(shard_id):
+    db_logger_connection[shard_id] = sqlite3.connect(
+        database=f"distributed_systems_logger_{shard_id}",
+    )
+
 def init_logger(shards_list):
     for shard_id in shards_list:
         db_logger_connection[shard_id] = sqlite3.connect(
