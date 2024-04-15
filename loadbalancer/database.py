@@ -125,3 +125,10 @@ def set_primary(shard_id: str, hostname: str):
         query = f"UPDATE MapT SET IsPrimary = TRUE WHERE Shard_id = '{shard_id}' AND Server_id = '{hostname}'"
         cursor.execute(query)
         conn.commit()
+
+def get_primaries(hostname: str):
+    # get all the shards for which the given server is the primary server
+    with conn.cursor() as cursor:
+        query = f"SELECT Shard_id FROM MapT WHERE Server_id = '{hostname}' AND IsPrimary = TRUE"
+        cursor.execute(query)
+        return [x[0] for x in cursor.fetchall()]

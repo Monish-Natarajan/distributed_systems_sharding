@@ -297,7 +297,11 @@ async def add_servers(request_body: AddRequest):
             'message': message,
             'status': "success"
         }
-
+        with httpx.AsyncClient() as client:
+            # elect primaries for the new shards
+            for shard in request_body.new_shards:
+                response = await client.get(f"http://shard_manager:8080/primary_elect/{shard.Shard_id}")
+                set_primary(shard.Shard_id, response['primary_server'])
         return JSONResponse(content=repsonse_data, status_code=200)
 
 
@@ -670,6 +674,9 @@ async def handle_failure(hostname):
             # get the shards that this server once held
             shards_to_copy = database.get_shards_for_server(hostname)
             # need to remove it from the MapT table, it has already been removed the consistent hashing rings
+
+            # this server might be the primary for certain shards, make a list of them
+            primaries = database.get_primaries(hostname) # list of shards whose primary server is {hostname}
             try:
                 database.delete_map_server(hostname)
             except Exception as e:
@@ -760,6 +767,11 @@ async def handle_failure(hostname):
                     log(f"Succesfully added server {new_hostname} to replace {hostname}")
                     deadServers.append(hostname) # prevent further failure handling for the old server that's no more
                     asyncio.get_event_loop().create_task(reapDeadServer(hostname))
+                    for shard in primaries:
+                        # elect a new primary for this shard
+                        async with httpx.AsyncClient() as client:
+                            response = (await client.get(f"http://shard_manager:8080/primary_elect/{shard}")).json()
+                            set_primary(shard, response['primary_server'])
                 except Exception as e:
                     log(f"An error occurred while adding server {new_hostname} to replace {hostname}: {e}")
                     # can't do much, let's just continue
