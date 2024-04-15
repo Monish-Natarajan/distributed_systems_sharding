@@ -18,7 +18,7 @@ from log_utils import write_log_entry, commit_logs, add_connector, init_logger
 app = FastAPI()
 
 server_identifier = 'server_test' # os.environ['HOSTNAME']
-
+isPrimaryForShard: Dict[str, bool] = {} # is this server the primary server for a given shard id
 @app.get('/home')
 async def home():
     data = {
@@ -188,7 +188,6 @@ class RowData(TypedDict):
 
 class WriteRequest(BaseModel):
     shard: str
-    curr_idx: int
     data: List[RowData]
     replica_hostnames: Optional[List[str]] = None
 
@@ -197,7 +196,6 @@ class WriteRequest(BaseModel):
 async def write_entries(write_request: WriteRequest):
     cursor = db_connection.cursor()
     write_response = {}
-    curr_idx = write_request.curr_idx
     
     # write to logger
     write_log_entry(
@@ -208,11 +206,7 @@ async def write_entries(write_request: WriteRequest):
     )
 
     shard = write_request.shard
-    query = "SELECT is_primary FROM shard_primary_mapping WHERE shard_id = %s"
-    cursor.execute(query, (shard,))
-    result = cursor.fetchone()
-    is_primary = result[0] if result else None
-    cursor.close()
+    is_primary = isPrimaryForShard[shard]
 
     if is_primary:
         # get the replica address and 
@@ -252,7 +246,6 @@ async def write_entries(write_request: WriteRequest):
 
         # get the number of entries written
         num_entries_written = cursor.rowcount
-        curr_idx += num_entries_written
     
     except Error as error:
         print(f"MySQL Error: '{error}'")
@@ -265,7 +258,6 @@ async def write_entries(write_request: WriteRequest):
         cursor.close()
     
     write_response["message"] = "Data entries added"
-    write_response["curr_idx"] = curr_idx
     write_response["status"] = "success"
     
     return JSONResponse(content=write_response, status_code=200)
@@ -340,7 +332,9 @@ async def delete_entry(delete_request: DeleteRequest):
 async def get_log_file(shard_id: str):
     file = open(f"distributed_systems_logger_{shard_id}.db", "rb")
     return StreamingResponse(file, media_type="application/octet-stream")
-
+@app.get('num_log_entries/{shard_id}')
+async def get_num_entries(shard_id: str):
+    pass
 
 @app.post('/upload_log_file/{shard_id}')
 async def upload_log_file(shard_id: str, file: UploadFile = File(...)):
@@ -350,39 +344,6 @@ async def upload_log_file(shard_id: str, file: UploadFile = File(...)):
     add_connector(shard_id)
     # JSON success response
     return JSONResponse(content={"message": "Log file uploaded successfully", "status": "success"}, status_code=200) 
-
-
-
-def initialize():
-    cursor = db_connection.cursor()
-
-    cursor.execute("SHOW TABLES")
-    tables = cursor.fetchall()
-
-    for table in tables:
-        try:
-            cursor.execute(f"DROP TABLE {table[0]}")
-        except Error as error:
-            print(f"MySQL Error: '{error}'")
-
-
-    create_table_query = """
-    CREATE TABLE IF NOT EXISTS shard_primary_mapping (
-        shard_id VARCHAR(32),
-        is_primary BOOLEAN,
-        PRIMARY KEY (shard_id)
-    )
-    """
-    try:
-        cursor.execute(create_table_query)
-        print("shard_primary_mapping table created successfully.")
-    except Error as e:
-        print(f"The error '{e}' occurred.")
-    finally:
-        cursor.close()
-
-    cursor.close()
-    db_connection.commit()
 
 
 sleep(10)
@@ -398,5 +359,4 @@ db_connection = mysql.connector.connect(
 PRIMARY=False # UPDATE THIS
 
 if __name__ == "__main__":
-    initialize()
     uvicorn.run("server_fast_mysql:app", host="0.0.0.0", port=8080, reload=True)
