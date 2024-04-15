@@ -1,8 +1,9 @@
-1. Add "log_file" endpoint to server, should respond with the log file as the response (POST request) for a particular shard
-2. Use SQLite to store log file for each shard separately
+1.  - [x] Add "log_file" endpoint to server, should respond with the log file as the response (POST request) for a particular shard
+2. - [x] Use SQLite to store log file for each shard separately
 3. When non-primary server fails, lb/sm should request the primary for each shard to send the log files, so that the new server
    can reconstruct the shards
 4. Reconstruct the shards using the log files
 5. Move rollback code from load balancer to primary server
 6. Primary elect -> shard manager -> will need log files from servers
 7. replicate code in del and update in server
+8. modify write end point in load_balancer to send replica_hostnames list of strings to primary along with the data to be sent, see /write in server for more details

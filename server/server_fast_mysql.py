@@ -1,14 +1,16 @@
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, StreamingResponse
 from fastapi.responses import JSONResponse
-from typing import List, Dict
+from typing import List, Dict, Optional
 from typing_extensions import TypedDict
 from pydantic import BaseModel, Field
 import mysql.connector
 from mysql.connector import Error
+import sqlite3
 from time import sleep
 import string
 import random
+from httpx import AsyncClient
 
 from log_utils import write_log_entry, commit_logs
 
@@ -173,6 +175,9 @@ async def read_entries(read_request: ReadRequest):
     read_response["status"] = "success"
     return JSONResponse(content=read_response, status_code=200)
 
+# end point for udating primary status
+# @app.post('/primary')
+
 class RowData(TypedDict):
     Stud_id: int
     Stud_name: str
@@ -182,10 +187,7 @@ class WriteRequest(BaseModel):
     shard: str
     curr_idx: int
     data: List[RowData]
-
-
-# end point for udating primary status
-# @app.post('/primary')
+    replica_hostnames: Optional[List[str]] = None
 
 
 @app.post('/write')
@@ -196,8 +198,8 @@ async def write_entries(write_request: WriteRequest):
     
     # write to logger
     write_log_entry(
-        op_type="write",
         shard_id=write_request.shard,
+        op_type="write",
         stud_id_low=write_request.data[0]["Stud_id"],
         stud_id_high=write_request.data[-1]["Stud_id"]
     )
@@ -211,25 +213,31 @@ async def write_entries(write_request: WriteRequest):
 
     if is_primary:
         # get the replica address and 
-        hostnames = get_replica_address()
+        hostnames = write_request.replica_hostnames
         num_replicas = len(hostnames)
 
-        # forward incoming request to the replica
-        ...
+        # create copy of request json and nullify the replica_hostnames
+        write_request_copy = write_request.dict()
+        del write_request_copy['replica_hostnames']
+        write_request_copy = WriteRequest(**write_request_copy)
 
-        # wait for response for success response from all of replicas
-        ...
+        response_count = 0
+        async with AsyncClient() as client:
+            for hostname in hostnames:
+                response = await client.post(f"http://{hostname}/write", json=write_request_copy.dict())
+                if response.status_code == 200:
+                    response_count += 1
 
         if response_count < num_replicas:
             endpoint_response = {
                 "message": "Write failed",
                 "status": "failed"
             }
+            # DO ROLLBACK
             return JSONResponse(content=endpoint_response, status_code=500)
-        
-            # how will rollback be handled?
 
-    # when will the logs be committed?
+    # commit logs
+    db_logger_connection.commit()
 
     try:
         shard = write_request.shard
@@ -325,6 +333,12 @@ async def delete_entry(delete_request: DeleteRequest):
     return JSONResponse(content=delete_response, status_code=200)
 
 
+@app.get('/log_file')
+async def get_log_file():
+    file = open("distributed_systems_logger.db", "rb")
+    return StreamingResponse(file, media_type="application/octet-stream")
+
+
 def initialize():
     cursor = db_connection.cursor()
 
@@ -356,8 +370,6 @@ def initialize():
     cursor.close()
     db_connection.commit()
 
-def get_replica_address():
-    pass
 
 sleep(10)
 db_connection = mysql.connector.connect(
@@ -368,12 +380,8 @@ db_connection = mysql.connector.connect(
     auth_plugin='mysql_native_password'
 )
 # connect to the logger database
-db_logger_connection = mysql.connector.connect(
-    host="127.0.0.1",
-    user="root", 
-    password="testing",
+db_logger_connection = sqlite3.connect(
     database="distributed_systems_logger",
-    auth_plugin='mysql_native_password'
 )
 
 PRIMARY=False # UPDATE THIS
