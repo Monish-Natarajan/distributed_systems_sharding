@@ -236,8 +236,8 @@ async def write_entries(write_request: WriteRequest):
             # DO ROLLBACK
             return JSONResponse(content=endpoint_response, status_code=500)
 
-    # commit logs
-    db_logger_connection.commit()
+    # commit the logs for the specified shard
+    commit_logs(write_request.shard)
 
     try:
         shard = write_request.shard
@@ -333,9 +333,9 @@ async def delete_entry(delete_request: DeleteRequest):
     return JSONResponse(content=delete_response, status_code=200)
 
 
-@app.get('/log_file')
-async def get_log_file():
-    file = open("distributed_systems_logger.db", "rb")
+@app.get('/log_file/{shard_id}')
+async def get_log_file(shard_id: str):
+    file = open(f"distributed_systems_logger_{shard_id}.db", "rb")
     return StreamingResponse(file, media_type="application/octet-stream")
 
 
@@ -354,7 +354,7 @@ def initialize():
 
     create_table_query = """
     CREATE TABLE IF NOT EXISTS shard_primary_mapping (
-        shard_id INT,
+        shard_id VARCHAR(32),
         is_primary BOOLEAN,
         PRIMARY KEY (shard_id)
     )
@@ -379,10 +379,7 @@ db_connection = mysql.connector.connect(
     database="distributed_systems",
     auth_plugin='mysql_native_password'
 )
-# connect to the logger database
-db_logger_connection = sqlite3.connect(
-    database="distributed_systems_logger",
-)
+
 
 PRIMARY=False # UPDATE THIS
 
