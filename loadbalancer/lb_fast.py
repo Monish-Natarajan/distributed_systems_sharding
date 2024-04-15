@@ -337,6 +337,13 @@ async def remove_servers(request_body: RemoveRequest):
             for server_name in server_names:
                 # remove server from the consistent hashing ring
                 delete_server(server_name)
+                # mark server as dead
+                deadServers.append(server_name)
+                # elect primary for shards that this server was primary for
+                for shard in database.get_primaries(server_name):
+                    async with httpx.AsyncClient() as client:
+                        response = await client.get(f"http://shard_manager:8080/primary_elect/{shard}")
+                        set_primary(shard, response['primary_server'])
         
         except Exception as e:
             data = {
@@ -357,7 +364,6 @@ async def remove_servers(request_body: RemoveRequest):
             'message': message,
             'status': "success"
         }
-
         return JSONResponse(content=repsonse_data, status_code=200)
 
 
