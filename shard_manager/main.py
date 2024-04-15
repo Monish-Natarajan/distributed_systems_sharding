@@ -64,5 +64,8 @@ async def heartbeat_check():
                 log(f"{server_hostname} is alive -- passed heartbeat check")
             else:
                 # server is dead, spawn a new server to replace it
-                await handle_failure(server_hostname)
-    await asyncio.sleep(20 * 60) # sleep for 20 minutes and then perform a check
+                with httpx.Client() as client:
+                    response = client.get(f"http://load_balancer:5001/handle_failure/{server_hostname}")
+                if response.status_code == 200:
+                    log(f"{server_hostname} heartbeat failure dealt with successfully")
+        await asyncio.sleep(20 * 60) # sleep for 20 minutes and then perform a check

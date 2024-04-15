@@ -625,6 +625,9 @@ def remove_container(node_name):
         log("Output:", result.stdout)
         return "success"
 
+@app.get('/handle_failure/{hostname}')
+async def handle_failure_route(hostname: str):
+    await handle_failure(hostname)
 
 # checks if any of the servers are down, is called when a server doesn't respond
 async def handle_failure(hostname):
